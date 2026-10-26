@@ -1,5 +1,3 @@
-import Header from '../components/Header'
-import PokemonCard from '../components/PokemonCard'
 import './Home.css'
 import { Link } from 'react-router'
 
