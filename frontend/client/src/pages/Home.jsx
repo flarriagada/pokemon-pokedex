@@ -1,15 +1,26 @@
+import Header from '../components/Header'
+import PokemonCard from '../components/PokemonCard'
+import './Home.css'
+
 function Home() {
   return (
-    <main>
-      <h1>Pokémon Card Collection</h1>
-      <p>Manage your Pokémon card collection.</p>
+    <>
+      <Header />
 
-      <section>
-        <h2>My Collection</h2>
-        <p>No cards added yet.</p>
-      </section>
-    </main>
-  );
+      <main className="main-content">
+        <section className="collection">
+          <h2>Mi Colección</h2>
+
+          <div className="empty-collection">
+            <h3>Tu colección está vacía</h3>
+            <p>
+             Empieza a añadir tus cartas pokemon para construir tu colección personal
+            </p>
+          </div>
+        </section>
+      </main>
+    </>
+  )
 }
 
-export default Home;
+export default Home
