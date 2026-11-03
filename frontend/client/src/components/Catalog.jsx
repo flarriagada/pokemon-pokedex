@@ -1,9 +1,15 @@
-import { useState, useEffect } from 'react'
+
+import { useEffect, useState } from 'react'
 import { getCards } from '../services/cardService'
+import PokemonCard from './PokemonCard'
+import './Catalog.css'
+
+const CARDS_PER_PAGE = 12
 
 function Catalog() {
   const [searchText, setSearchText] = useState('')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -16,7 +22,7 @@ function Catalog() {
       setError('')
 
       try {
-        const result = await getCards(search, 1)
+        const result = await getCards(search, page)
 
         if (!cancelled) {
           setCards(result)
@@ -38,51 +44,88 @@ function Catalog() {
     return () => {
       cancelled = true
     }
-  }, [search])
+  }, [search, page])
 
   function handleSearch(event) {
     event.preventDefault()
+    setPage(1)
     setSearch(searchText.trim())
+  }
+
+  function showAll() {
+    setSearchText('')
+    setSearch('')
+    setPage(1)
   }
 
   return (
     <section className="catalog">
       <h2>Catálogo de cartas</h2>
-      <p>Explora y busca cartas Pokémon.</p>
-        <form onSubmit={handleSearch}>
+      <p>Explora o busca cartas Pokémon.</p>
+
+      <form className="catalog-search" onSubmit={handleSearch}>
         <label htmlFor="card-search">
-          Nombre de la carta
+          Buscar por nombre
         </label>
 
         <input
           id="card-search"
           type="search"
+          placeholder="Ej.: Pikachu"
           value={searchText}
           onChange={(event) => setSearchText(event.target.value)}
-          placeholder="Ej.: Pikachu"
         />
 
-        <button type="submit">
-          Buscar
+        <button type="submit">Buscar</button>
+
+        <button type="button" onClick={showAll}>
+          Mostrar todo
         </button>
       </form>
 
-      {loading && <p>Buscando cartas...</p>}
+      {loading && <p role="status">Cargando cartas...</p>}
 
       {error && <p role="alert">{error}</p>}
 
-      {!loading && !error && cards.length === 0 && (
-        <p>No se encontraron cartas.</p>
-      )}
+      {!loading && !error && (
+        <>
+          <p>
+            Página {page} · {cards.length} cartas mostradas
+          </p>
 
-      {!loading && !error && cards.length > 0 && (
-        <ul>
-          {cards.map((card) => (
-            <li key={card.id}>
-              {card.name} - N.º {card.localId}
-            </li>
-          ))}
-        </ul>
+          {cards.length === 0 ? (
+            <p>No se encontraron cartas en esta página.</p>
+          ) : (
+            <div className="pokemon-grid">
+              {cards.map((card) => (
+                <PokemonCard
+                  key={card.id}
+                  card={card}
+                />
+              ))}
+            </div>
+          )}
+
+          <nav className="pagination" aria-label="Páginas del catálogo">
+            <button
+              type="button"
+              disabled={page === 1}
+              onClick={() => setPage((p) => p - 1)}
+            >
+              Anterior
+            </button>
+
+            <span>Página {page}</span>
+
+            <button
+              type="button"
+              disabled={cards.length < CARDS_PER_PAGE}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Siguiente
+            </button>
+          </nav>
+        </>
       )}
     </section>
   )

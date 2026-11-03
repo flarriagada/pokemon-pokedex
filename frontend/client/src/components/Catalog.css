@@ -1,0 +1,76 @@
+
+.pokemon-grid {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(170px, 1fr)
+  );
+  gap: 20px;
+  margin-top: 25px;
+}
+
+.pokemon-card {
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  padding: 15px;
+  text-align: center;
+}
+
+.pokemon-card-image {
+  width: 100%;
+  aspect-ratio: 245 / 337;
+  object-fit: contain;
+}
+
+.pokemon-placeholder {
+  aspect-ratio: 245 / 337;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #f0f0f0;
+  color: #666;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.pokemon-card h3 {
+  margin-bottom: 8px;
+}
+
+.pokemon-card p {
+  color: #666;
+  font-size: 14px;
+}
+
+
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin-top: 30px;
+}
+
+.pagination button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  background-color: #e63946;
+  color: white;
+  cursor: pointer;
+}
+
+.pagination button:disabled {
+  background-color: #ccc;
+  color: #555;
+  cursor: not-allowed;
+}
+
+.missing-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 20px 0;
+}

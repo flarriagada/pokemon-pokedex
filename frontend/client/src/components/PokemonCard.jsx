@@ -1,13 +1,31 @@
+import { useState } from 'react'
 
-function PokemonCard({ name, type, icon }) {
+function PokemonCard({ card }) {
+  const [imageError, setImageError] = useState(false)
+
+  const imageUrl = card.image
+    ? `${card.image}/low.webp`
+    : null
+
   return (
     <article className="pokemon-card">
-      <div className="pokemon-icon">
-        {icon}
-      </div>
+      {imageUrl && !imageError ? (
+        <img
+          src={imageUrl}
+          alt={`Carta de ${card.name}`}
+          className="pokemon-card-image"
+          loading="lazy"
+          onError={() => setImageError(true)}
+        />
+      ) : (
+        <div className="pokemon-placeholder">
+          Imagen no disponible
+        </div>
+      )}
 
-      <h3>{name}</h3>
-      <p>Tipo: {type}</p>
+      <h3>{card.name}</h3>
+      <p>N.º {card.localId}</p>
+      <p>ID: {card.id}</p>
     </article>
   )
 }
