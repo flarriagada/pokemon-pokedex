@@ -1,6 +1,9 @@
 import { getCardsFromTcgdex , getCardFromTcgdex} from './services/tcgdexService.ts'
 import { openDatabase } from './db/database.ts'
 import { handleCollectionRequest } from './routes/collectionRoutes.ts'
+import { handleAuthRequest } from './routes/authRoutes.ts'
+
+
 const PORT = 8000
 const db = openDatabase()
 
@@ -13,6 +16,16 @@ Deno.serve(
     const url = new URL(request.url)
 
 console.log('Solicitud recibida:', request.method, url.pathname)
+
+const authResponse = await handleAuthRequest(
+  request,
+  url
+)
+
+if (authResponse) {
+  return authResponse
+}
+
 
 
     if (

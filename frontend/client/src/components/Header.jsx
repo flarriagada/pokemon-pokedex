@@ -1,4 +1,5 @@
 import { Link, NavLink } from 'react-router'
+import GoogleLoginButton from './GoogleLoginButton'
 
 function Header() {
   return (
@@ -6,7 +7,7 @@ function Header() {
       <h1>
         <Link to="/">Mi Pokédex</Link>
       </h1>
-      <p>Organiza y administra tus cartas pokemón</p>
+      <p>Organiza y administra tus cartas Pokémon</p>
       <nav className="site-nav" aria-label="Navegación principal">
         <NavLink to="/" end>
           Inicio
@@ -20,6 +21,7 @@ function Header() {
           Mi colección
         </NavLink>
       </nav>
+      <GoogleLoginButton />
     </header>
   )
 }
