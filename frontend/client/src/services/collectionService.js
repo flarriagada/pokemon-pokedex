@@ -29,3 +29,29 @@ export async function addCardToCollection(cardId, quantity = 1) {
 
   return response.json()
 }
+
+export async function updateCollectionQuantity(id, quantity) {
+  const response = await fetch(`${COLLECTION_URL}/${id}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ quantity })
+  })
+
+  if (!response.ok) {
+    throw new Error('No se pudo actualizar la cantidad')
+  }
+
+  return response.json()
+}
+
+export async function deleteCollectionCard(id) {
+  const response = await fetch(`${COLLECTION_URL}/${id}`, {
+    method: 'DELETE'
+  })
+
+  if (!response.ok) {
+    throw new Error('No se pudo eliminar la carta')
+  }
+}
