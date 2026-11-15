@@ -1,17 +1,13 @@
 
-const API_URL = 'https://api.tcgdex.net/v2/es'
+export async function getCards(search = '', page = 1) {
+  const params = new URLSearchParams()
 
-export async function getCards(search= '', page = 1) {
-  const url = new URL(`${API_URL}/cards`)
-  
-  url.searchParams.set('pagination:page', String(page))
-  url.searchParams.set('pagination:itemsPerPage', '12')
-
+  params.set('page', String(page))
   if (search.trim()) {
-    url.searchParams.set('name', search.trim())
+    params.set('search', search.trim())
   }
 
-  const response = await fetch(url)
+  const response = await fetch(`/api/cards?${params.toString()}`)
 
   if (!response.ok) {
     throw new Error('No se pudieron obtener las cartas')

@@ -9,6 +9,9 @@ Deno.serve(
   async (request: Request) => {
     const url = new URL(request.url)
 
+console.log('Solicitud recibida:', request.method, url.pathname)
+
+
     if (
       request.method === 'GET' &&
       url.pathname === '/api/health'
@@ -43,3 +46,10 @@ Deno.serve(
         )
       }
     }
+
+    return Response.json(
+      { error: 'Ruta no encontrada' },
+      { status: 404 }
+    )
+  }
+)
