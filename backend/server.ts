@@ -1,5 +1,8 @@
 import { getCardsFromTcgdex } from './services/tcgdexService.ts'
+import { openDatabase } from './db/database.ts'
+import { handleCollectionRequest } from './routes/collectionRoutes.ts'
 const PORT = 8000
+const db = openDatabase()
 
 Deno.serve(
   {
@@ -16,6 +19,7 @@ console.log('Solicitud recibida:', request.method, url.pathname)
       request.method === 'GET' &&
       url.pathname === '/api/health'
     ) {
+      db.prepare('SELECT 1').get() //comprobamos conexion con SQLite puede realizar consultas
       return Response.json({
         status: 'ok',
         service: 'pokemon-pokedex-api'
@@ -46,6 +50,16 @@ console.log('Solicitud recibida:', request.method, url.pathname)
         )
       }
     }
+
+const collectionResponse = await handleCollectionRequest(
+  request,
+  url,
+  db
+)
+
+if (collectionResponse) {
+  return collectionResponse
+}
 
     return Response.json(
       { error: 'Ruta no encontrada' },
