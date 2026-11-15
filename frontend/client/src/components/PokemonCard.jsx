@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-function PokemonCard({ card }) {
+function PokemonCard({ card, onAdd, adding = false }) {
   const [imageError, setImageError] = useState(false)
 
   const imageUrl = card.image
@@ -26,6 +26,18 @@ function PokemonCard({ card }) {
       <h3>{card.name}</h3>
       <p>N.º {card.localId}</p>
       <p>ID: {card.id}</p>
+      
+      {onAdd && (
+        <button
+         type="button"
+         className="add-card-button"
+         onClick={() => onAdd(card)}
+         disabled={adding}
+  >
+         {adding ? 'Agregando...' : 'Agregar a mi colección'}
+        </button>
+)}
+
     </article>
   )
 }

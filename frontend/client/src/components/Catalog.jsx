@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { getCards } from '../services/cardService'
 import PokemonCard from './PokemonCard'
+import { addCardToCollection } from '../services/collectionService'
 import './Catalog.css'
 
 const CARDS_PER_PAGE = 12
@@ -13,6 +14,8 @@ function Catalog() {
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [addingCardId, setAddingCardId] = useState(null)
+  const [addFeedback, setAddFeedback] = useState(null)
 
   useEffect(() => {
     let cancelled = false
@@ -58,6 +61,31 @@ function Catalog() {
     setPage(1)
   }
 
+
+async function handleAddToCollection(card) {
+  if (addingCardId !== null) return
+
+  setAddingCardId(card.id)
+  setAddFeedback(null)
+
+  try {
+    const savedCard = await addCardToCollection(card.id, 1)
+
+    setAddFeedback({
+      type: 'success',
+      text: `${card.name} agregada. Cantidad: ${savedCard.quantity}`
+    })
+  } catch {
+    setAddFeedback({
+      type: 'error',
+      text: 'No se pudo agregar la carta a tu colección.'
+    })
+  } finally {
+    setAddingCardId(null)
+  }
+}
+
+
   return (
     <section className="catalog">
       <h2>Catálogo de cartas</h2>
@@ -81,7 +109,20 @@ function Catalog() {
         <button type="button" onClick={showAll}>
           Mostrar todo
         </button>
+      
       </form>
+
+      {/* Mensaje de confirmación o error al agregar una carta */}
+      {addFeedback && (
+        <p role={addFeedback.type === 'error' ? 'alert' : 'status'}>
+          {addFeedback.text}
+        </p>
+      )}
+
+      {loading && <p role="status">Cargando cartas...</p>}
+
+      {error && <p role="alert">{error}</p>}
+
 
       {loading && <p role="status">Cargando cartas...</p>}
 
@@ -101,6 +142,8 @@ function Catalog() {
                 <PokemonCard
                   key={card.id}
                   card={card}
+                  onAdd={handleAddToCollection}
+                  adding={addingCardId === card.id}
                 />
               ))}
             </div>
