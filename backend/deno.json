@@ -1,8 +1,8 @@
 
 {
   "tasks": {
-    "dev": "deno run --watch --allow-net=127.0.0.1:8000,api.tcgdex.net server.ts",
-    "start": "deno run --allow-net=127.0.0.1:8000,api.tcgdex.net server.ts",
+    "dev": "APP_ENV=development deno run --watch --allow-env=APP_ENV --allow-net=127.0.0.1:8000,api.tcgdex.net --allow-read=./data --allow-write=./data server.ts",
+    "start": "deno run --allow-env=APP_ENV --allow-net=127.0.0.1:8000,api.tcgdex.net --allow-read=./data --allow-write=./data server.ts",
     "check": "deno check server.ts",
     "lint": "deno lint"
   }
