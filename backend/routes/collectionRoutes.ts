@@ -7,9 +7,17 @@ export async function handleCollectionRequest(
   db: DatabaseSync
 ): Promise<Response | null> {
 
-  if (url.pathname !== '/api/collection') {
-    return null
-  }
+
+const isCollectionRoot = url.pathname === '/api/collection'
+
+const itemMatch = url.pathname.match(
+  /^\/api\/collection\/(\d+)$/
+)
+
+if (!isCollectionRoot && !itemMatch) {
+  return null
+}
+
 
   // Acceso temporal solo para desarrollo local
   if (Deno.env.get('APP_ENV') !== 'development') {
@@ -34,7 +42,7 @@ export async function handleCollectionRequest(
   const userId = Number(user.id)
 
   // GET: consultar la colección
-  if (request.method === 'GET') {
+  if (isCollectionRoot && request.method === 'GET') {
     const cards = db.prepare(`
       SELECT
         id,
@@ -50,7 +58,7 @@ export async function handleCollectionRequest(
   }
 
   // POST: agregar una carta
-  if (request.method === 'POST') {
+  if (isCollectionRoot && request.method === 'POST') {
     let body: unknown
 
     try {
@@ -113,6 +121,106 @@ export async function handleCollectionRequest(
     `).get(userId, normalizedId)
 
     return Response.json(savedCard, { status: 200 })
+  }
+ 
+  if (itemMatch) {
+    const itemId = Number(itemMatch[1])
+
+    if (!Number.isSafeInteger(itemId) || itemId < 1) {
+      return Response.json(
+        { error: 'ID inválido' },
+        { status: 400 }
+      )
+    }
+
+    // PATCH: modificar cantidad
+    if (request.method === 'PATCH') {
+      let body: unknown
+
+      try {
+        body = await request.json()
+      } catch {
+        return Response.json(
+          { error: 'JSON inválido' },
+          { status: 400 }
+        )
+      }
+
+      if (
+        body === null ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        return Response.json(
+          { error: 'Datos inválidos' },
+          { status: 400 }
+        )
+      }
+
+      const data = body as Record<string, unknown>
+      const quantity = data.quantity
+
+      if (
+        typeof quantity !== 'number' ||
+        !Number.isSafeInteger(quantity) ||
+        quantity < 1
+      ) {
+        return Response.json(
+          { error: 'Cantidad inválida' },
+          { status: 400 }
+        )
+      }
+
+      const result = db.prepare(`
+        UPDATE user_cards
+        SET quantity = ?
+        WHERE id = ? AND user_id = ?
+      `).run(quantity, itemId, userId)
+
+      if (result.changes === 0) {
+        return Response.json(
+          { error: 'Registro no encontrado' },
+          { status: 404 }
+        )
+      }
+
+      const updatedCard = db.prepare(`
+        SELECT
+          id,
+          card_id AS cardId,
+          quantity,
+          created_at AS createdAt
+        FROM user_cards
+        WHERE id = ? AND user_id = ?
+      `).get(itemId, userId)
+
+      return Response.json(updatedCard)
+    }
+
+    // DELETE: eliminar carta del inventario
+    if (request.method === 'DELETE') {
+      const result = db.prepare(`
+        DELETE FROM user_cards
+        WHERE id = ? AND user_id = ?
+      `).run(itemId, userId)
+
+      if (result.changes === 0) {
+        return Response.json(
+          { error: 'Registro no encontrado' },
+          { status: 404 }
+        )
+      }
+
+      return new Response(null, { status: 204 })
+    }
+
+    return Response.json(
+      { error: 'Método no permitido' },
+      {
+        status: 405,
+        headers: { Allow: 'PATCH, DELETE' }
+      }
+    )
   }
 
   return Response.json(
