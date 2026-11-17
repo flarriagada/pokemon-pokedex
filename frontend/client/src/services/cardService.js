@@ -15,3 +15,15 @@ export async function getCards(search = '', page = 1) {
 
   return response.json()
 }
+
+export async function getCardById(cardId) {
+  const response = await fetch(
+    `/api/cards/${encodeURIComponent(cardId)}`
+  )
+
+  if (!response.ok) {
+    throw new Error('No se pudieron obtener los detalles')
+  }
+
+  return response.json()
+}

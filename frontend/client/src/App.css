@@ -279,3 +279,58 @@
 .collection-item p {
   color: #666;
 }
+
+.collection-item .pokemon-card {
+  border: none;
+  padding: 0;
+}
+
+.collection-quantity {
+  text-align: center;
+  font-weight: bold;
+  margin-top: 15px;
+  color: #222;
+}
+
+.collection-item .pokemon-card {
+  border: none;
+  padding: 0;
+}
+
+.quantity-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 15px;
+}
+
+.quantity-controls button {
+  padding: 8px 14px;
+  background-color: #e63946;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.quantity-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.delete-card-button {
+  width: 100%;
+  margin-top: 15px;
+  padding: 10px;
+  background-color: #555;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.delete-card-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

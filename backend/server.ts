@@ -1,4 +1,4 @@
-import { getCardsFromTcgdex } from './services/tcgdexService.ts'
+import { getCardsFromTcgdex , getCardFromTcgdex} from './services/tcgdexService.ts'
 import { openDatabase } from './db/database.ts'
 import { handleCollectionRequest } from './routes/collectionRoutes.ts'
 const PORT = 8000
@@ -46,6 +46,48 @@ console.log('Solicitud recibida:', request.method, url.pathname)
       } catch {
         return Response.json(
           { error: 'No se pudieron obtener las cartas' },
+          { status: 502 }
+        )
+      }
+    }
+
+    const cardMatch = url.pathname.match(
+      /^\/api\/cards\/([^/]+)$/
+    )
+
+    if (request.method === 'GET' && cardMatch) {
+      let cardId: string
+
+      try {
+        cardId = decodeURIComponent(cardMatch[1])
+      } catch {
+        return Response.json(
+          { error: 'Identificador inválido' },
+          { status: 400 }
+        )
+      }
+
+      if (!cardId.trim() || cardId.length > 100) {
+        return Response.json(
+          { error: 'Identificador inválido' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        const card = await getCardFromTcgdex(cardId)
+
+        if (!card) {
+          return Response.json(
+            { error: 'Carta no encontrada' },
+            { status: 404 }
+          )
+        }
+
+        return Response.json(card)
+      } catch {
+        return Response.json(
+          { error: 'No se pudieron obtener los detalles' },
           { status: 502 }
         )
       }

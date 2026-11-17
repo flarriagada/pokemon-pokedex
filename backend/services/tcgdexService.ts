@@ -22,3 +22,20 @@ export async function getCardsFromTcgdex(
 
   return response.json()
 }
+
+export async function getCardFromTcgdex(cardId: string) {
+  const url = `${API_URL}/cards/${encodeURIComponent(cardId)}`
+
+  const response = await fetch(url)
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error('Error al consultar los detalles de la carta')
+  }
+
+  return response.json()
+}
+
