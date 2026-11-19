@@ -8,7 +8,7 @@ async function requestAuth(path, options, signal) {
     response = await fetch(`${GOOGLE_AUTH_URL}/${path}`, {
       ...options,
       cache: 'no-store',
-      credentials: 'omit',
+      credentials: 'same-origin',
       signal: AbortSignal.any([
         signal,
         AbortSignal.timeout(REQUEST_TIMEOUT_MS)
@@ -77,4 +77,35 @@ export async function verifyGoogleCredential(credential, signal) {
   }
 
   return result.profile
+}
+
+
+// Envía el JWT de Google para crear una sesión en el servidor.
+export async function loginWithGoogle(credential, signal) {
+  if (
+    typeof credential !== 'string' ||
+    !credential ||
+    credential.length > 12000
+  ) {
+    throw new Error('Google no entregó una credencial válida.')
+  }
+
+  const result = await requestAuth(
+    'login',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential })
+    },
+    signal
+  )
+
+  if (
+    result?.authenticated !== true ||
+    !Number.isSafeInteger(result.user?.id)
+  ) {
+    throw new Error('No se pudo confirmar la sesión.')
+  }
+
+  return result.user
 }
