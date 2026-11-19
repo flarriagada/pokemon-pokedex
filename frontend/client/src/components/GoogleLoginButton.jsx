@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google'
-import { getGoogleAuthConfig, loginWithGoogle } from '../services/authService'
+import { getGoogleAuthConfig, loginWithGoogle, getCurrentUser } from '../services/authService'
 import './GoogleLoginButton.css'
 
 function GoogleLoginButton() {
@@ -11,6 +11,8 @@ function GoogleLoginButton() {
   const [message, setMessage] = useState('')
   const [attempt, setAttempt] = useState(0)
   const verificationController = useRef(null)
+  const [sessionUser, setSessionUser] = useState(null)
+  const [isCheckingSession, setIsCheckingSession] = useState(true)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -49,6 +51,35 @@ function GoogleLoginButton() {
     return () => verificationController.current?.abort()
   }, [])
 
+
+  useEffect(() => {
+    const controller = new AbortController()
+
+    async function restoreSession() {
+      try {
+        // Consultamos si el navegador tiene una sesión válida.
+        const user = await getCurrentUser(controller.signal)
+
+        if (!controller.signal.aborted) {
+          setSessionUser(user)
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setVerificationStatus('error')
+          setMessage('No se pudo comprobar la sesión.')
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsCheckingSession(false)
+        }
+      }
+    }
+
+    restoreSession()
+
+    return () => controller.abort()
+  }, [])
+
   function handleScriptError() {
     setScriptStatus('error')
     setVerificationStatus('error')
@@ -64,11 +95,13 @@ function GoogleLoginButton() {
     setMessage('Verificando tu identidad con el servidor…')
 
     try {
-      await loginWithGoogle(credential, controller.signal)
+      const user= await loginWithGoogle(credential, controller.signal)
 
       if (!controller.signal.aborted) {
         setVerificationStatus('verified')
         setMessage('Sesión creada correctamente con Google.')
+        setSessionUser(user)
+
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -103,6 +136,32 @@ function GoogleLoginButton() {
 
   const isVerifying = verificationStatus === 'verifying'
   const canRetryConfig = !isLoadingConfig && (!clientId || scriptStatus === 'error')
+
+  // Mostramos un mensaje mientras comprobamos la sesión.
+  if (isCheckingSession) {
+    return (
+      <section className="google-login">
+        <p role="status">Comprobando sesión...</p>
+      </section>
+    )
+  }
+
+  // Si hay una sesión válida, no mostramos el botón de Google.
+  if (sessionUser) {
+    return (
+      <section className="google-login">
+        <p role="status">
+          Sesión iniciada
+          {sessionUser.email
+            ? ` con ${sessionUser.email}`
+            : ' correctamente'}.
+        </p>
+        <p className="google-login-note">
+          Continúa con Google para iniciar sesión en tu Pokédex.
+        </p>
+      </section>
+    )
+  }
 
   return (
     <section className="google-login" aria-label="Verificación de identidad con Google">

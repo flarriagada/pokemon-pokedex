@@ -2,10 +2,15 @@ import { getCardsFromTcgdex , getCardFromTcgdex} from './services/tcgdexService.
 import { openDatabase } from './db/database.ts'
 import { handleCollectionRequest } from './routes/collectionRoutes.ts'
 import { handleAuthRequest } from './routes/authRoutes.ts'
-
+import { cleanupExpiredSessions } from './db/cleanupSessions.ts'
 
 const PORT = 8000
 const db = openDatabase()
+
+// Limpiamos las sesiones vencidas cada vez que inicia el servidor.
+const deletedSessions = cleanupExpiredSessions(db)
+
+console.log('Sesiones vencidas eliminadas:', deletedSessions)
 
 Deno.serve(
   {

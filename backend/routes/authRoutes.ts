@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { findOrCreateGoogleUser } from '../db/userRepository.ts'
 import { createSession } from '../services/sessionService.ts'
+import { getUserFromSession } from '../services/sessionService.ts'
 
 import { verifyGoogleCredential } from '../services/googleAuthService.ts'
 
@@ -9,6 +10,49 @@ export async function handleAuthRequest(
   url: URL,
   db :DatabaseSync
 ): Promise<Response | null> {
+
+  if (url.pathname === '/api/auth/me') {
+
+    if (request.method !== 'GET') {
+      return Response.json(
+        { error: 'Método no permitido' },
+        { status: 405 }
+      )
+    }
+
+    // Leemos la cookie enviada automáticamente por el navegador.
+    const cookies = request.headers.get('Cookie') ?? ''
+
+    const sessionCookie = cookies
+      .split(';')
+      .map((cookie) => cookie.trim())
+      .find((cookie) =>
+        cookie.startsWith('pokedex_session=')
+      )
+
+    const token = sessionCookie
+      ? sessionCookie.slice('pokedex_session='.length)
+      : ''
+
+    // Buscamos el usuario de la sesión en SQLite.
+    const user = await getUserFromSession(db, token)
+
+    if (!user) {
+      return Response.json(
+        { authenticated: false },
+        {
+          status: 401,
+          headers: { 'Cache-Control': 'no-store' }
+        }
+      )
+    }
+
+    return Response.json(
+      { authenticated: true, user },
+      { headers: { 'Cache-Control': 'no-store' } }
+    )
+  }
+
 
   if (url.pathname === '/api/auth/google/config') {
     if (request.method !== 'GET') {
