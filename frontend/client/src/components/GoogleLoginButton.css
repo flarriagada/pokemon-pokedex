@@ -49,3 +49,22 @@
   outline: 3px solid #a51c2a;
   outline-offset: 3px;
 }
+
+.google-logout-button {
+  padding: 10px 16px;
+  border: 1px solid #a51c2a;
+  border-radius: 8px;
+  background-color: white;
+  color: #a51c2a;
+  font: inherit;
+  cursor: pointer;
+}
+
+.google-logout-button:hover {
+  background-color: #fff0f1;
+}
+
+.google-logout-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

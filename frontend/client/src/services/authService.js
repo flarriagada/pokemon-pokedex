@@ -146,3 +146,19 @@ export async function getCurrentUser(signal) {
 
   return data.user
 }
+
+ // Solicita al backend cerrar la sesión.
+export async function logoutFromPokedex() {
+
+  // El navegador envía automáticamente la cookie de sesión.
+  const response = await fetch('/api/auth/logout', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store'
+  })
+
+  // HTTP 204 significa que el servidor completó el logout.
+  if (response.status !== 204) {
+    throw new Error('No se pudo cerrar la sesión.')
+  }
+}

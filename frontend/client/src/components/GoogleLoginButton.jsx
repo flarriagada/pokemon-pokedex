@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google'
-import { getGoogleAuthConfig, loginWithGoogle, getCurrentUser } from '../services/authService'
+import { getGoogleAuthConfig, loginWithGoogle, getCurrentUser, logoutFromPokedex } from '../services/authService'
 import './GoogleLoginButton.css'
 
 function GoogleLoginButton() {
@@ -13,6 +13,8 @@ function GoogleLoginButton() {
   const verificationController = useRef(null)
   const [sessionUser, setSessionUser] = useState(null)
   const [isCheckingSession, setIsCheckingSession] = useState(true)
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [logoutError, setLogoutError] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -125,6 +127,31 @@ function GoogleLoginButton() {
     setMessage('Si cancelas o cierras la ventana de Google, puedes volver a intentarlo con el botón.')
   }
 
+  // Cierra la sesión desde React.
+  async function handleLogout() {
+    if (isLoggingOut) return
+
+    setIsLoggingOut(true)
+    setLogoutError('')
+
+    try {
+      // Solicitamos a Deno invalidar la sesión.
+      await logoutFromPokedex()
+
+      // Indicamos a React quee ya no hay un usuario autenticado
+      setSessionUser(null)
+
+      // Volvemos al estado inicial del login.
+      setVerificationStatus('idle')
+      setMessage('Sesión cerrada correctamente.')
+    } catch {
+      // Si falla el servidor, mantenemos al usuario en pantalla.
+      setLogoutError('No se pudo cerrar la sesión. Inténtalo nuevamente.')
+    } finally {
+      setIsLoggingOut(false)
+    }
+  }
+
   function handleRetry() {
     setClientId('')
     setIsLoadingConfig(true)
@@ -148,20 +175,32 @@ function GoogleLoginButton() {
 
   // Si hay una sesión válida, no mostramos el botón de Google.
   if (sessionUser) {
-    return (
-      <section className="google-login">
-        <p role="status">
-          Sesión iniciada
-          {sessionUser.email
-            ? ` con ${sessionUser.email}`
-            : ' correctamente'}.
+     return (
+    <section className="google-login">
+      <p role="status">
+        Sesión iniciada
+        {sessionUser.email
+          ? ` con ${sessionUser.email}`
+          : ' correctamente'}.
+      </p>
+
+      <button
+        type="button"
+        className="google-logout-button"
+        onClick={handleLogout}
+        disabled={isLoggingOut}
+      >
+        {isLoggingOut ? 'Cerrando sesión...' : 'Cerrar sesión'}
+      </button>
+
+      {logoutError && (
+        <p role="alert" className="google-login-message--error">
+          {logoutError}
         </p>
-        <p className="google-login-note">
-          Continúa con Google para iniciar sesión en tu Pokédex.
-        </p>
-      </section>
-    )
-  }
+      )}
+    </section>
+  )
+}
 
   return (
     <section className="google-login" aria-label="Verificación de identidad con Google">
@@ -207,8 +246,7 @@ function GoogleLoginButton() {
       )}
       
       <p className="google-login-note">
-        Tu sesión se ha creado correctamente.
-        Próximamente podrás mantenerla al recargar la página.
+        Continúa con Google para iniciar sesión en tu Pokédex
       </p>
 
     </section>
