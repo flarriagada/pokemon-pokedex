@@ -7,7 +7,7 @@ export function openDatabase() {
   const db = new DatabaseSync('./data/pokedex.db')
 
   db.exec('PRAGMA foreign_keys = ON;')
-
+// tablas para usuarios, cartas de usuarios y sesiones
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,6 +32,23 @@ export function openDatabase() {
       UNIQUE(user_id, card_id),
       CHECK(quantity > 0)
     );
+
+    -- Cada sesión pertenece a un usuario registrado.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      expires_at INTEGER NOT NULL,
+
+      FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+--impide guardar una sesión que venza antes de su fecha de creación o exactamente en ella
+      CHECK(expires_at > created_at)
+    );
+
   `)
 
   return db
