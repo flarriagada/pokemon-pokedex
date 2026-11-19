@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { insertSession, findActiveSessionUser } from '../db/sessionRepository.ts'
+import { insertSession, findActiveSessionUser, deleteSessionByTokenHash } from '../db/sessionRepository.ts'
 
 const SESSION_DURATION_SECONDS = 2 * 24 * 60 * 60
 
@@ -87,4 +87,22 @@ export async function getUserFromSession(
 
   // Buscamos al usuario solamente si la sesión está vigente.
   return findActiveSessionUser(db, tokenHash)
+}
+
+// Invalida una sesión utilizando su token original.
+export async function revokeSession(
+  db: DatabaseSync,
+  token: string
+): Promise<boolean> {
+
+  // Comprobamos que el token tenga el formato esperado.
+  if (!/^[0-9a-f]{64}$/.test(token)) {
+    return false
+  }
+
+  // Calculamos el hash del token recibido.
+  const tokenHash = await hashSessionToken(token)
+
+  // Eliminamos la sesión de SQLite utilizando su hash.
+  return deleteSessionByTokenHash(db, tokenHash)
 }

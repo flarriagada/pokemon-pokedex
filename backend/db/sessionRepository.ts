@@ -50,3 +50,20 @@ export function findActiveSessionUser(
       : null
   }
 }
+
+// Elimina una sesión específica utilizando el hash de su token.
+export function deleteSessionByTokenHash(
+  db: DatabaseSync,
+  tokenHash: string
+): boolean {
+
+  // Buscamos y eliminamos solamente la sesión
+  // que coincida con el hash recibido.
+  const result = db.prepare(`
+    DELETE FROM sessions
+    WHERE token_hash = ?
+  `).run(tokenHash)
+
+  // Devolvemos true si SQLite eliminó una sesión.
+  return Number(result.changes) > 0
+}

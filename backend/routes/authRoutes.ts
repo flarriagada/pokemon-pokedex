@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { findOrCreateGoogleUser } from '../db/userRepository.ts'
 import { createSession } from '../services/sessionService.ts'
-import { getUserFromSession } from '../services/sessionService.ts'
+import { getUserFromSession, revokeSession } from '../services/sessionService.ts'
 
 import { verifyGoogleCredential } from '../services/googleAuthService.ts'
 
@@ -10,6 +10,65 @@ export async function handleAuthRequest(
   url: URL,
   db :DatabaseSync
 ): Promise<Response | null> {
+
+  // Endpoint para cerrar la sesión actual.
+  if (url.pathname === '/api/auth/logout') {
+
+    // Logout debe modificar datos, por eso utilizamos POST.
+    if (request.method !== 'POST') {
+      return Response.json(
+        { error: 'Método no permitido' },
+        { status: 405, headers: { Allow: 'POST' } }
+      )
+    }
+
+    // Solo aceptamos solicitudes desde nuestro frontend local.
+    if (request.headers.get('Origin') !== 'http://localhost:5173') {
+      return Response.json(
+        { error: 'Origen no autorizado' },
+        { status: 403 }
+      )
+    }
+
+    // Recuperamos el token desde la cookie del navegador.
+    const cookies = request.headers.get('Cookie') ?? ''
+
+    const sessionCookie = cookies
+      .split(';')
+      .map((cookie) => cookie.trim())
+      .find((cookie) =>
+        cookie.startsWith('pokedex_session=')
+      )
+
+    const token = sessionCookie
+      ? sessionCookie.slice('pokedex_session='.length)
+      : ''
+
+    try {
+      // Invalidamos la sesión en SQLite.
+      await revokeSession(db, token)
+    } catch {
+      return Response.json(
+        { error: 'No se pudo cerrar la sesión' },
+        { status: 500 }
+      )
+    }
+
+    // Max-Age=0 indica al navegador que elimine la cookie.
+    const secure = url.protocol === 'https:' ? '; Secure' : ''
+
+    const expiredCookie =
+      'pokedex_session=; HttpOnly; SameSite=Lax; ' +
+      `Path=/; Max-Age=0${secure}`
+
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Set-Cookie': expiredCookie,
+        'Cache-Control': 'no-store'
+      }
+    })
+  }
 
   if (url.pathname === '/api/auth/me') {
 
