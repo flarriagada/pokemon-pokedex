@@ -6,6 +6,30 @@ export async function handleAuthRequest(
   url: URL
 ): Promise<Response | null> {
 
+  if (url.pathname === '/api/auth/google/config') {
+    if (request.method !== 'GET') {
+      return Response.json(
+        { error: 'Método no permitido' },
+        { status: 405, headers: { Allow: 'GET' } }
+      )
+    }
+
+    const clientId = Deno.env.get('GOOGLE_CLIENT_ID')
+
+    if (!clientId?.trim()) {
+      return Response.json(
+        { error: 'Verificación con Google no configurada' },
+        { status: 503, headers: { 'Cache-Control': 'no-store' } }
+      )
+    }
+
+    // El Client ID es público. Nunca devolver el resto de las variables de entorno.
+    return Response.json(
+      { clientId },
+      { headers: { 'Cache-Control': 'no-store' } }
+    )
+  }
+
   if (url.pathname !== '/api/auth/google/verify') {
     return null //Preguntamos si la solicitud corresponde a nuestra ruta de autenticacion
     //Si no corresponde, se siguen procesando las demás rutas 
