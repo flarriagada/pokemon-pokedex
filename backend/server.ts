@@ -3,6 +3,7 @@ import { openDatabase } from './db/database.ts'
 import { handleCollectionRequest } from './routes/collectionRoutes.ts'
 import { handleAuthRequest } from './routes/authRoutes.ts'
 import { cleanupExpiredSessions } from './db/cleanupSessions.ts'
+import { handleDeckRequest } from './routes/deckRoutes.ts'
 
 const PORT = 8000
 const db = openDatabase()
@@ -120,6 +121,17 @@ const collectionResponse = await handleCollectionRequest(
 
 if (collectionResponse) {
   return collectionResponse
+}
+
+// Procesamos las solicitudes relacionadas con mazos.
+const deckResponse = await handleDeckRequest(
+  request,
+  url,
+  db
+)
+
+if (deckResponse) {
+  return deckResponse
 }
 
     return Response.json(

@@ -1,9 +1,9 @@
 import { BrowserRouter, Link, Route, Routes } from 'react-router'
-
 import Home from './pages/Home'
 import Header from './components/Header'
 import Collection from './pages/Collection'
 import Catalog from './components/Catalog.jsx'
+import Decks from './pages/Decks'
 
 import './App.css'
 
@@ -19,6 +19,8 @@ function App() {
           <Route path="/catalog" element={<Catalog />} />
 
           <Route path="/collection" element={<Collection />} />
+          
+          <Route path="/decks" element={<Decks />} />
 
           <Route
             path="*"

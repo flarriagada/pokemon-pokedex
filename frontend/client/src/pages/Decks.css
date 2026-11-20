@@ -1,0 +1,228 @@
+.decks-page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.deck-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 500px;
+  margin: 25px 0;
+  padding: 20px;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+}
+
+.deck-form input,
+.deck-form textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.deck-form button {
+  padding: 12px;
+  background-color: #e63946;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.deck-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.deck-list {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(220px, 1fr)
+  );
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.deck-item {
+  padding: 20px;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+}
+
+.deck-item h4 {
+  margin-top: 0;
+  color: #a51c2a;
+}
+
+.deck-item p {
+  color: #555;
+  overflow-wrap: anywhere;
+}
+
+.deck-item button {
+  padding: 10px 14px;
+  margin-top: 10px;
+  background-color: #e63946;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.deck-item button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.deck-cards-panel {
+  margin-top: 20px;
+  padding-top: 15px;
+  border-top: 1px solid #ddd;
+}
+
+.deck-cards-panel form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.deck-cards-panel select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.deck-card-list {
+  padding-left: 20px;
+}
+
+.deck-card-list li {
+  margin-bottom: 8px;
+}
+
+/* Los mazos tienen espacio para mostrar sus cartas. */
+.deck-list {
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, 380px), 1fr)
+  );
+}
+
+/* Cada carta se muestra en una fila horizontal. */
+.deck-card-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #ddd;
+}
+
+.deck-card-list {
+  padding-left: 0;
+}
+
+/* Imagen de la carta Pokémon. */
+.deck-card-image,
+.deck-card-image-placeholder {
+  width: 70px;
+  aspect-ratio: 245 / 337;
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.deck-card-image-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #eee;
+  color: #666;
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Nombre, disponibilidad y cantidad. */
+.deck-card-info {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+
+.deck-card-info small {
+  color: #666;
+}
+
+.deck-card-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.deck-card-controls button {
+  width: 32px;
+  height: 32px;
+  margin-top: 0;
+  padding: 0;
+  font-size: 18px;
+}
+
+.deck-card-controls span {
+  min-width: 15px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.deck-card-row .remove-deck-card-button {
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 8px 10px;
+  background-color: #555;
+}
+
+/* Botones para editar y eliminar mazos. */
+.deck-action-buttons,
+.deck-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.deck-action-buttons button,
+.deck-edit-actions button {
+  flex: 1;
+}
+
+/* Formulario para modificar un mazo. */
+.deck-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 15px 0;
+}
+
+.deck-edit-form input,
+.deck-edit-form textarea {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font: inherit;
+}
+
+/* Diferenciamos el botón de eliminar. */
+.deck-action-buttons .delete-deck-button {
+  background-color: #555;
+}

@@ -20,6 +20,11 @@ function Header() {
         <NavLink to="/collection">
           Mi colección
         </NavLink>
+
+        <NavLink to="/decks">
+          Mis mazos
+        </NavLink>
+
       </nav>
       <GoogleLoginButton />
     </header>
