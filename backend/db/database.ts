@@ -22,6 +22,7 @@ export function openDatabase() {
       user_id INTEGER NOT NULL,
       card_id TEXT NOT NULL,
       quantity INTEGER NOT NULL DEFAULT 1,
+      for_trade INTEGER NOT NULL DEFAULT 0 CHECK(for_trade IN (0, 1)),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
       FOREIGN KEY (user_id)
@@ -84,6 +85,23 @@ export function openDatabase() {
     );
 
   `)
+
+  // Agregamos la disponibilidad a inventarios creados anteriormente.
+  const userCardColumns = db.prepare(
+    'PRAGMA table_info(user_cards)'
+  ).all()
+
+  const hasForTrade = userCardColumns.some(
+    (column) => column.name === 'for_trade'
+  )
+
+  if (!hasForTrade) {
+    db.exec(`
+      ALTER TABLE user_cards
+      ADD COLUMN for_trade INTEGER NOT NULL DEFAULT 0
+      CHECK(for_trade IN (0, 1));
+    `)
+  }
 
   // Comprobamos si la tabla de cartas del mazo ya tiene cantidad.
   const columns = db.prepare(

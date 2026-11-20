@@ -272,6 +272,11 @@
   padding: 20px;
 }
 
+.collection-item--for-trade {
+  border: 2px solid #2e7d32;
+  box-shadow: 0 0 0 2px rgba(46, 125, 50, 0.12);
+}
+
 .collection-item h3 {
   font-size: 16px;
 }
@@ -335,6 +340,72 @@
   cursor: not-allowed;
 }
 
+.trade-filter {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.trade-filter button {
+  padding: 9px 14px;
+  border: 1px solid #a51c2a;
+  border-radius: 8px;
+  background-color: white;
+  color: #a51c2a;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.trade-filter button[aria-pressed='true'] {
+  background-color: #a51c2a;
+  color: white;
+}
+
+.trade-filter-empty {
+  margin-top: 25px;
+  text-align: center;
+}
+
+.trade-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 15px;
+  padding: 10px;
+  border-radius: 8px;
+  background-color: #f5f5f5;
+}
+
+.trade-control label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.trade-control input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: #2e7d32;
+}
+
+.trade-control input:disabled {
+  cursor: wait;
+}
+
+.trade-status {
+  color: #666;
+  font-size: 13px;
+}
+
+.collection-item--for-trade .trade-status {
+  color: #1b5e20;
+  font-weight: bold;
+}
+
 /* Posicionamos el switch dentro del encabezado. */
 .site-header {
   position: relative;
@@ -392,6 +463,10 @@
   .language-switch {
     top: 10px;
     right: 12px;
+  }
+
+  .trade-filter button {
+    width: 100%;
   }
 }
 

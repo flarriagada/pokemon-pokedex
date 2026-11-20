@@ -53,6 +53,22 @@ export async function updateCollectionQuantity(id, quantity) {
   return response.json()
 }
 
+export async function updateCardTradeStatus(id, forTrade) {
+  const response = await fetch(`${COLLECTION_URL}/${id}/trade`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ forTrade })
+  })
+
+  if (!response.ok) {
+    throw new Error('No se pudo actualizar la disponibilidad')
+  }
+
+  return response.json()
+}
+
 export async function deleteCollectionCard(id) {
   const response = await fetch(`${COLLECTION_URL}/${id}`, {
     method: 'DELETE'

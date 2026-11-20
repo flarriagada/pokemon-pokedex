@@ -14,7 +14,11 @@ const itemMatch = url.pathname.match(
   /^\/api\/collection\/(\d+)$/
 )
 
-if (!isCollectionRoot && !itemMatch) {
+const tradeMatch = url.pathname.match(
+  /^\/api\/collection\/(\d+)\/trade$/
+)
+
+if (!isCollectionRoot && !itemMatch && !tradeMatch) {
   return null
 }
 
@@ -67,13 +71,19 @@ const userId = user.id
         id,
         card_id AS cardId,
         quantity,
+        for_trade AS forTrade,
         created_at AS createdAt
       FROM user_cards
       WHERE user_id = ?
       ORDER BY id DESC
     `).all(userId)
 
-    return Response.json(cards)
+    return Response.json(
+      cards.map((card) => ({
+        ...card,
+        forTrade: Boolean(card.forTrade)
+      }))
+    )
   }
 
   // POST: agregar una carta
@@ -140,6 +150,88 @@ const userId = user.id
     `).get(userId, normalizedId)
 
     return Response.json(savedCard, { status: 200 })
+  }
+
+  if (tradeMatch) {
+    const itemId = Number(tradeMatch[1])
+
+    if (!Number.isSafeInteger(itemId) || itemId < 1) {
+      return Response.json(
+        { error: 'ID inválido' },
+        { status: 400 }
+      )
+    }
+
+    if (request.method !== 'PATCH') {
+      return Response.json(
+        { error: 'Método no permitido' },
+        {
+          status: 405,
+          headers: { Allow: 'PATCH' }
+        }
+      )
+    }
+
+    let body: unknown
+
+    try {
+      body = await request.json()
+    } catch {
+      return Response.json(
+        { error: 'JSON inválido' },
+        { status: 400 }
+      )
+    }
+
+    if (
+      body === null ||
+      typeof body !== 'object' ||
+      Array.isArray(body)
+    ) {
+      return Response.json(
+        { error: 'Datos inválidos' },
+        { status: 400 }
+      )
+    }
+
+    const data = body as Record<string, unknown>
+    const forTrade = data.forTrade
+
+    if (typeof forTrade !== 'boolean') {
+      return Response.json(
+        { error: 'Disponibilidad inválida' },
+        { status: 400 }
+      )
+    }
+
+    const result = db.prepare(`
+      UPDATE user_cards
+      SET for_trade = ?
+      WHERE id = ? AND user_id = ?
+    `).run(forTrade ? 1 : 0, itemId, userId)
+
+    if (result.changes === 0) {
+      return Response.json(
+        { error: 'Registro no encontrado' },
+        { status: 404 }
+      )
+    }
+
+    const updatedCard = db.prepare(`
+      SELECT
+        id,
+        card_id AS cardId,
+        quantity,
+        for_trade AS forTrade,
+        created_at AS createdAt
+      FROM user_cards
+      WHERE id = ? AND user_id = ?
+    `).get(itemId, userId)
+
+    return Response.json({
+      ...updatedCard,
+      forTrade: Boolean(updatedCard?.forTrade)
+    })
   }
  
   if (itemMatch) {
