@@ -53,11 +53,14 @@ function Collection() {
           setCards(completeCards)
         }
 
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setError('No se pudo cargar tu colección.')
+          setCards([])
+          setError(error.message)
         }
-      } finally {
+      } 
+      
+      finally {
         if (!cancelled) {
           setLoading(false)
         }

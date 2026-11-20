@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google'
 import { getGoogleAuthConfig, loginWithGoogle, getCurrentUser, logoutFromPokedex } from '../services/authService'
 import './GoogleLoginButton.css'
+import { useNavigate } from 'react-router'
 
 function GoogleLoginButton() {
   const [clientId, setClientId] = useState('')
@@ -15,6 +16,7 @@ function GoogleLoginButton() {
   const [isCheckingSession, setIsCheckingSession] = useState(true)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
   const [logoutError, setLogoutError] = useState('')
+  const navigate = useNavigate()
 
   useEffect(() => {
     const controller = new AbortController()
@@ -144,6 +146,7 @@ function GoogleLoginButton() {
       // Volvemos al estado inicial del login.
       setVerificationStatus('idle')
       setMessage('Sesión cerrada correctamente.')
+      navigate('/', { replace: true }) //Volvemos al inicio, reemp la enrtrada actual del historial por inicio.
     } catch {
       // Si falla el servidor, mantenemos al usuario en pantalla.
       setLogoutError('No se pudo cerrar la sesión. Inténtalo nuevamente.')

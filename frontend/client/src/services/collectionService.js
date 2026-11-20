@@ -3,14 +3,21 @@ const COLLECTION_URL = '/api/collection'
 
 export async function getCollection() {
   const response = await fetch(COLLECTION_URL)
+  if(response.status===401){
+    throw new Error(
+      'Debes iniciar ssesión para ver tu colección'
+    )
+  }
 
-  if (!response.ok) {
-    throw new Error('No se pudo obtener la colección')
+  if(!response.ok){
+    throw new Error(
+      'No se pudo obtener la colección'
+    )
   }
 
   return response.json()
 }
-
+  
 export async function addCardToCollection(cardId, quantity = 1) {
   const response = await fetch(COLLECTION_URL, {
     method: 'POST',
