@@ -5,7 +5,7 @@ import { getCardById } from '../services/cardService'
 import PokemonCard from '../components/PokemonCard'
 import '../components/Catalog.css'
 
-function Collection() {
+function Collection({ texts, language }) {
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -17,6 +17,9 @@ function Collection() {
     let cancelled = false
 
     async function loadCollection() {
+      setLoading(true)
+      setError('')
+
       try {
         const result = await getCollection()
 
@@ -29,7 +32,7 @@ function Collection() {
         const completeCards = await Promise.all(
           savedCards.map(async (item) => {
             try {
-              const details = await getCardById(item.cardId)
+              const details = await getCardById(item.cardId, language)
 
               return {
                 ...item,
@@ -38,12 +41,7 @@ function Collection() {
             } catch {
               return {
                 ...item,
-                details: {
-                  id: item.cardId,
-                  name: `Carta ${item.cardId}`,
-                  localId: '—',
-                  image: null
-                }
+                details: null
               }
             }
           })
@@ -72,7 +70,7 @@ function Collection() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [language])
 
 async function handleQuantityChange(item, newQuantity) {
   if (busyId !== null || newQuantity < 1) return
@@ -94,7 +92,7 @@ async function handleQuantityChange(item, newQuantity) {
       )
     )
   } catch {
-    setActionError('No se pudo actualizar la cantidad.')
+    setActionError('updateError')
   } finally {
     setBusyId(null)
   }
@@ -104,9 +102,8 @@ async function handleQuantityChange(item, newQuantity) {
 async function handleDelete(item) {
   if (busyId !== null) return
 
-  const confirmed = window.confirm(
-    `¿Quieres eliminar ${item.details.name} de tu colección?`
-  )
+  const cardName = item.details?.name || texts.collection.cardFallback(item.cardId)
+  const confirmed = window.confirm(texts.collection.confirmDelete(cardName))
 
   if (!confirmed) return
 
@@ -120,7 +117,7 @@ async function handleDelete(item) {
       current.filter((card) => card.id !== item.id)
     )
   } catch {
-    setActionError('No se pudo eliminar la carta.')
+    setActionError('deleteError')
   } finally {
     setBusyId(null)
   }
@@ -133,40 +130,49 @@ async function handleDelete(item) {
 
   return (
     <section className="collection">
-      <h2>Mi colección</h2>
+      <h2>{texts.collection.title}</h2>
       {actionError && (
-        <p role="alert">{actionError}</p>
+        <p role="alert">{texts.collection[actionError]}</p>
       )}
 
-      {loading && <p role="status">Cargando colección...</p>}
+      {loading && <p role="status">{texts.collection.loading}</p>}
 
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p role="alert">
+          {texts.collection.serviceError(error, texts.collection.loadError)}
+        </p>
+      )}
 
       {!loading && !error && cards.length === 0 && (
         <div className="empty-collection">
-          <h3>Tu colección está vacía</h3>
-          <p>Todavía no tienes cartas registradas.</p>
-          <Link to="/catalog">Explorar catálogo</Link>
+          <h3>{texts.collection.emptyTitle}</h3>
+          <p>{texts.collection.emptyText}</p>
+          <Link to="/catalog">{texts.collection.explore}</Link>
         </div>
       )}
 
       {!loading && !error && cards.length > 0 && (
         <>
-          <p>
-            Tienes {totalCards} cartas en total,
-            de {cards.length} cartas diferentes.
-          </p>
+          <p>{texts.collection.total(totalCards, cards.length)}</p>
 
           
           <div className="collection-grid">
-            {cards.map((item) => (
+            {cards.map((item) => {
+              const details = item.details ?? {
+                id: item.cardId,
+                name: texts.collection.cardFallback(item.cardId),
+                localId: '—',
+                image: null
+              }
+
+              return (
               <article key={item.id} className="collection-item">
-                <PokemonCard card={item.details} />
+                <PokemonCard card={details} texts={texts} />
 
                 <div className="quantity-controls">
                   <button
                     type="button"
-                    aria-label={`Quitar una unidad de ${item.details.name}`}
+                    aria-label={texts.collection.decrease(details.name)}
                     disabled={busyId !== null || item.quantity <= 1}
                     onClick={() =>
                       handleQuantityChange(item, item.quantity - 1)
@@ -175,11 +181,11 @@ async function handleDelete(item) {
                     −
                   </button>
 
-                  <span>Cantidad: {item.quantity}</span>
+                  <span>{texts.collection.quantity(item.quantity)}</span>
 
                   <button
                     type="button"
-                    aria-label={`Agregar una unidad de ${item.details.name}`}
+                    aria-label={texts.collection.increase(details.name)}
                     disabled={busyId !== null}
                     onClick={() =>
                       handleQuantityChange(item, item.quantity + 1)
@@ -195,10 +201,11 @@ async function handleDelete(item) {
                   disabled={busyId !== null}
                   onClick={() => handleDelete(item)}
                 >
-                  {busyId === item.id ? 'Guardando...' : 'Eliminar carta'}
+                  {busyId === item.id ? texts.collection.saving : texts.collection.delete}
                 </button>
               </article>
-            ))}
+              )
+            })}
           </div>
         </>
       )}

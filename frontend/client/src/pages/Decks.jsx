@@ -1,11 +1,35 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { getDecks, createDeck, getDeckCards, addCardToDeck,
          updateDeckCardQuantity, removeCardFromDeck, updateDeck, deleteDeck} from '../services/deckService'
 import { getCollection } from '../services/collectionService'
 import { getCardById } from '../services/cardService'
 import './Decks.css'
 
-function Decks() {
+async function getLocalizedCollectionCards(language) {
+  const collection = await getCollection()
+
+  return Promise.all(
+    collection.map(async (item) => {
+      try {
+        const details = await getCardById(item.cardId, language)
+
+        return {
+          ...item,
+          displayName: details?.name || item.cardId,
+          image: details?.image || null
+        }
+      } catch {
+        return {
+          ...item,
+          displayName: item.cardId,
+          image: null
+        }
+      }
+    })
+  )
+}
+
+function Decks({ texts, language }) {
   // Guardamos Mazos
   const [decks, setDecks] = useState([])
   // Guardamos lo que escribe el usuario.
@@ -15,7 +39,7 @@ function Decks() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState('')
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(null)
   // Que mazo estamos viendo
   const [activeDeckId, setActiveDeckId] = useState(null)
   // Cartas disponibles en nuestra colección
@@ -27,8 +51,8 @@ function Decks() {
   // Controlamos la carga y las acciones sobre las cartas
   const [cardsLoading, setCardsLoading] = useState(false)
   const [addingCard, setAddingCard] = useState(false)
-  const [cardsError, setCardsError] = useState('')
-  const [cardsMessage, setCardsMessage] = useState('')
+  const [cardsError, setCardsError] = useState(null)
+  const [cardsMessage, setCardsMessage] = useState(null)
   // Identifica que carta estamos modificando
   const [busyCardId, setBusyCardId] = useState(null)
   const [editingDeckId, setEditingDeckId] = useState(null) // Que mazo estamos editando
@@ -36,7 +60,8 @@ function Decks() {
   const [editName, setEditName] = useState('') 
   const [editDescription, setEditDescription] = useState('')
   const [busyDeckId, setBusyDeckId] = useState(null) // Evita editar o eliminar varias veces mientras guardamos
-  const [deckActionError, setDeckActionError] = useState('') //errores
+  const [deckActionError, setDeckActionError] = useState(null) //errores
+  const loadedDeckId = useRef(null)
 
 
 
@@ -70,6 +95,59 @@ function Decks() {
     }
   }, [])
 
+  // Actualizamos los datos visuales sin modificar el contenido del mazo.
+  useEffect(() => {
+    if (activeDeckId === null) {
+      loadedDeckId.current = null
+      return
+    }
+
+    let cancelled = false
+    const shouldLoadDeckCards = loadedDeckId.current !== activeDeckId
+
+    async function refreshLocalizedCards() {
+      setCardsLoading(true)
+      setCardsError(null)
+
+      try {
+        const [completeCollection, savedDeckCards] = await Promise.all([
+          getLocalizedCollectionCards(language),
+          shouldLoadDeckCards
+            ? getDeckCards(activeDeckId)
+            : Promise.resolve(null)
+        ])
+
+        if (!cancelled) {
+          setCollectionCards(completeCollection)
+
+          if (shouldLoadDeckCards) {
+            setDeckCards(savedDeckCards)
+          }
+
+          loadedDeckId.current = activeDeckId
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCardsError({
+            type: 'service',
+            value: error.message,
+            fallback: 'cardsLoadError'
+          })
+        }
+      } finally {
+        if (!cancelled) {
+          setCardsLoading(false)
+        }
+      }
+    }
+
+    refreshLocalizedCards()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeDeckId, language])
+
   // Se ejecuta cuando enviamos el formulario.
   async function handleCreateDeck(event) {
     event.preventDefault()
@@ -79,12 +157,12 @@ function Decks() {
     const normalizedName = name.trim()
 
     if (!normalizedName) {
-      setMessage('Debes escribir un nombre para el mazo.')
+      setMessage({ type: 'translation', key: 'nameRequired' })
       return
     }
 
     setSaving(true)
-    setMessage('')
+    setMessage(null)
 
     try {
       // Creamos el mazo en SQLite mediante Deno.
@@ -100,16 +178,16 @@ function Decks() {
       setName('')
       setDescription('')
 
-      setMessage('¡Mazo creado correctamente!')
+      setMessage({ type: 'translation', key: 'created' })
     } catch (error) {
-      setMessage(error.message)
+      setMessage({ type: 'service', value: error.message, fallback: 'createError' })
     } finally {
       setSaving(false)
     }
   }
 
   // Abre un mazo y carga las cartas de la colección.
-  async function handleOpenCards(deckId) {
+  function handleOpenCards(deckId) {
     if (cardsLoading || addingCard || busyCardId !== null) return //evita cambiar de mazo mientras estamos cambiando cantidades
 
     // Si presionamos el mismo mazo, cerramos su panel.
@@ -120,46 +198,10 @@ function Decks() {
 
     setActiveDeckId(deckId)
     setCardsLoading(true)
-    setCardsError('')
-    setCardsMessage('')
+    setCardsError(null)
+    setCardsMessage(null)
     setSelectedUserCardId('')
     setDeckCards([])
-
-    try {
-      // Obtenemos las cartas del inventario y del mazo.
-      const [collection, savedDeckCards] = await Promise.all([
-        getCollection(),
-        getDeckCards(deckId)
-      ])
-
-      // Consultamos TCGdex para mostrar los nombres.
-      const completeCollection = await Promise.all(
-        collection.map(async (item) => {
-          try {
-            const details = await getCardById(item.cardId)
-
-            return {
-              ...item,
-              displayName: details?.name || item.cardId,
-              image: details?.image || null
-            }
-          } catch {
-            return {
-              ...item,
-              displayName: item.cardId,
-              image: null
-            }
-          }
-        })
-      )
-
-      setCollectionCards(completeCollection)
-      setDeckCards(savedDeckCards)
-    } catch (error) {
-      setCardsError(error.message)
-    } finally {
-      setCardsLoading(false)
-    }
   }
 
   // Agrega la carta seleccionada al mazo.
@@ -175,13 +217,13 @@ function Decks() {
       userCardId < 1 ||
       !collectionCards.some((card) => card.id === userCardId)
     ) {
-      setCardsError('Selecciona una carta válida.')
+      setCardsError({ type: 'translation', key: 'invalidCard' })
       return
     }
 
     setAddingCard(true)
-    setCardsError('')
-    setCardsMessage('')
+    setCardsError(null)
+    setCardsMessage(null)
 
     try {
       // Pedimos a Deno asociar la carta con el mazo.
@@ -192,9 +234,9 @@ function Decks() {
 
       setDeckCards(updatedCards)
       setSelectedUserCardId('')
-      setCardsMessage('¡Carta agregada correctamente!')
+      setCardsMessage({ type: 'translation', key: 'cardAdded' })
     } catch (error) {
-      setCardsError(error.message)
+      setCardsError({ type: 'service', value: error.message, fallback: 'addCardError' })
     } finally {
       setAddingCard(false)
     }
@@ -216,8 +258,8 @@ function Decks() {
     }
 
     setBusyCardId(item.userCardId)
-    setCardsError('')
-    setCardsMessage('')
+    setCardsError(null)
+    setCardsMessage(null)
 
     try {
       // Guardamos la nueva cantidad en SQLite.
@@ -236,7 +278,7 @@ function Decks() {
         )
       )
     } catch (error) {
-      setCardsError(error.message)
+      setCardsError({ type: 'service', value: error.message, fallback: 'quantityError' })
     } finally {
       setBusyCardId(null)
     }
@@ -246,15 +288,17 @@ function Decks() {
   async function handleRemoveDeckCard(item) {
     if (busyCardId !== null || activeDeckId === null) return
 
-    const confirmed = window.confirm(
-      '¿Quieres quitar esta carta del mazo?'
+    const card = collectionCards.find(
+      (saved) => saved.id === item.userCardId
     )
+    const cardName = card?.displayName || item.cardId
+    const confirmed = window.confirm(texts.decks.confirmRemoveCard(cardName))
 
     if (!confirmed) return
 
     setBusyCardId(item.userCardId)
-    setCardsError('')
-    setCardsMessage('')
+    setCardsError(null)
+    setCardsMessage(null)
 
     try {
       // Eliminamos la relación en SQLite.
@@ -270,9 +314,9 @@ function Decks() {
         )
       )
 
-      setCardsMessage('Carta quitada del mazo.')
+      setCardsMessage({ type: 'translation', key: 'cardRemoved' })
     } catch (error) {
-      setCardsError(error.message)
+      setCardsError({ type: 'service', value: error.message, fallback: 'removeCardError' })
     } finally {
       setBusyCardId(null)
     }
@@ -283,8 +327,8 @@ function handleStartEdit(deck) {
   setEditingDeckId(deck.id)
   setEditName(deck.name)
   setEditDescription(deck.description || '')
-  setDeckActionError('')
-  setMessage('')
+  setDeckActionError(null)
+  setMessage(null)
 }
 
 // Guarda el nombre y descripción modificados.
@@ -296,13 +340,13 @@ async function handleSaveDeck(event, deckId) {
   const normalizedName = editName.trim()
 
   if (!normalizedName) {
-    setDeckActionError('Debes ingresar un nombre.')
+    setDeckActionError({ type: 'translation', key: 'editNameRequired' })
     return
   }
 
   setBusyDeckId(deckId)
-  setDeckActionError('')
-  setMessage('')
+  setDeckActionError(null)
+  setMessage(null)
 
   try {
     const updated = await updateDeck(
@@ -319,9 +363,9 @@ async function handleSaveDeck(event, deckId) {
     )
 
     setEditingDeckId(null)
-    setMessage('¡Mazo actualizado correctamente!')
+    setMessage({ type: 'translation', key: 'updated' })
   } catch (error) {
-    setDeckActionError(error.message)
+    setDeckActionError({ type: 'service', value: error.message, fallback: 'updateError' })
   } finally {
     setBusyDeckId(null)
   }
@@ -331,15 +375,13 @@ async function handleSaveDeck(event, deckId) {
 async function handleDeleteDeck(deck) {
   if (busyDeckId !== null) return
 
-  const confirmed = window.confirm(
-    `¿Quieres eliminar el mazo "${deck.name}"?`
-  )
+  const confirmed = window.confirm(texts.decks.confirmDelete(deck.name))
 
   if (!confirmed) return
 
   setBusyDeckId(deck.id)
-  setDeckActionError('')
-  setMessage('')
+  setDeckActionError(null)
+  setMessage(null)
 
   try {
     await deleteDeck(deck.id)
@@ -360,9 +402,9 @@ async function handleDeleteDeck(deck) {
       setEditingDeckId(null)
     }
 
-    setMessage('Mazo eliminado correctamente.')
+    setMessage({ type: 'translation', key: 'deleted' })
   } catch (error) {
-    setDeckActionError(error.message)
+    setDeckActionError({ type: 'service', value: error.message, fallback: 'deleteError' })
   } finally {
     setBusyDeckId(null)
   }
@@ -376,21 +418,30 @@ async function handleDeleteDeck(deck) {
       )
   )
 
+  function translateFeedback(feedback) {
+    if (!feedback) return ''
+
+    return feedback.type === 'service'
+      ? texts.decks.serviceError(
+          feedback.value,
+          texts.decks[feedback.fallback]
+        )
+      : texts.decks[feedback.key]
+  }
+
   return (
     <section className="decks-page">
-      <h2>Mis mazos</h2>
-
-      <p>
-        Crea mazos personalizados para organizar
-        las cartas de tu colección.
-      </p>
+      <h2>{texts.decks.title}</h2>
+      <p>{texts.decks.description}</p>
 
       {loading && (
-        <p role="status">Cargando mazos...</p>
+        <p role="status">{texts.decks.loading}</p>
       )}
 
       {loadError && (
-        <p role="alert">{loadError}</p>
+        <p role="alert">
+          {texts.decks.serviceError(loadError, texts.decks.loadError)}
+        </p>
       )}
 
       {!loading && !loadError && (
@@ -399,10 +450,10 @@ async function handleDeleteDeck(deck) {
             className="deck-form"
             onSubmit={handleCreateDeck}
           >
-            <h3>Crear nuevo mazo</h3>
+            <h3>{texts.decks.createTitle}</h3>
 
             <label htmlFor="deck-name">
-              Nombre del mazo
+              {texts.decks.nameLabel}
             </label>
 
             <input
@@ -412,13 +463,13 @@ async function handleDeleteDeck(deck) {
               onChange={(event) =>
                 setName(event.target.value)
               }
-              placeholder="Ej.: Mazo Fuego"
+              placeholder={texts.decks.namePlaceholder}
               maxLength={80}
               required
             />
 
             <label htmlFor="deck-description">
-              Descripción (opcional)
+              {texts.decks.optionalDescriptionLabel}
             </label>
 
             <textarea
@@ -427,28 +478,28 @@ async function handleDeleteDeck(deck) {
               onChange={(event) =>
                 setDescription(event.target.value)
               }
-              placeholder="Describe tu mazo..."
+              placeholder={texts.decks.descriptionPlaceholder}
               maxLength={250}
               rows={3}
             />
 
             <button type="submit" disabled={saving}>
-              {saving ? 'Guardando...' : 'Crear mazo'}
+              {saving ? texts.decks.saving : texts.decks.create}
             </button>
           </form>
 
           {message && (
-            <p role="status">{message}</p>
+            <p role="status">{translateFeedback(message)}</p>
           )}
 
           {deckActionError && (
-            <p role="alert">{deckActionError}</p>
+            <p role="alert">{translateFeedback(deckActionError)}</p>
           )}
 
-          <h3>Mazos guardados</h3>
+          <h3>{texts.decks.savedTitle}</h3>
 
           {decks.length === 0 ? (
-            <p>Todavía no tienes mazos creados.</p>
+            <p>{texts.decks.empty}</p>
           ) : (
             <div className="deck-list">
               {decks.map((deck) => (
@@ -459,7 +510,7 @@ async function handleDeleteDeck(deck) {
                   <h4>{deck.name}</h4>
 
                   <p>
-                    {deck.description || 'Sin descripción'}
+                    {deck.description || texts.decks.noDescription}
                   </p>
                   {editingDeckId === deck.id ? (
                     <form
@@ -467,7 +518,7 @@ async function handleDeleteDeck(deck) {
                       onSubmit={(event) => handleSaveDeck(event, deck.id)}
                     >
                       <label htmlFor={`edit-name-${deck.id}`}>
-                        Nombre del mazo
+                        {texts.decks.nameLabel}
                       </label>
 
                       <input
@@ -479,7 +530,7 @@ async function handleDeleteDeck(deck) {
                       />
 
                       <label htmlFor={`edit-description-${deck.id}`}>
-                        Descripción
+                        {texts.decks.descriptionLabel}
                       </label>
 
                       <textarea
@@ -495,8 +546,8 @@ async function handleDeleteDeck(deck) {
                       <div className="deck-edit-actions">
                         <button type="submit" disabled={busyDeckId !== null}>
                           {busyDeckId === deck.id
-                            ? 'Guardando...'
-                            : 'Guardar cambios'}
+                            ? texts.decks.saving
+                            : texts.decks.saveChanges}
                         </button>
 
                         <button
@@ -504,7 +555,7 @@ async function handleDeleteDeck(deck) {
                           disabled={busyDeckId !== null}
                           onClick={() => setEditingDeckId(null)}
                         >
-                          Cancelar
+                          {texts.decks.cancel}
                         </button>
                       </div>
                     </form>
@@ -520,7 +571,7 @@ async function handleDeleteDeck(deck) {
                         }
                         onClick={() => handleStartEdit(deck)}
                       >
-                        Editar mazo
+                        {texts.decks.edit}
                       </button>
 
                       <button
@@ -535,8 +586,8 @@ async function handleDeleteDeck(deck) {
                         onClick={() => handleDeleteDeck(deck)}
                       >
                         {busyDeckId === deck.id
-                          ? 'Eliminando...'
-                          : 'Eliminar mazo'}
+                          ? texts.decks.deleting
+                          : texts.decks.delete}
                       </button>
                     </div>
                   )}
@@ -547,36 +598,36 @@ async function handleDeleteDeck(deck) {
                     onClick={() => handleOpenCards(deck.id)}
                   >
                     {activeDeckId === deck.id
-                      ? 'Cerrar cartas'
-                      : 'Gestionar cartas'}
+                      ? texts.decks.closeCards
+                      : texts.decks.manageCards}
                   </button>
                   {activeDeckId === deck.id && (
                     <div className="deck-cards-panel">
 
                       {cardsLoading && (
-                        <p role="status">Cargando cartas...</p>
+                        <p role="status">{texts.decks.cardsLoading}</p>
                       )}
 
                       {cardsError && (
-                        <p role="alert">{cardsError}</p>
+                        <p role="alert">{translateFeedback(cardsError)}</p>
                       )}
 
                       {cardsMessage && (
-                        <p role="status">{cardsMessage}</p>
+                        <p role="status">{translateFeedback(cardsMessage)}</p>
                       )}
 
                       {!cardsLoading && (
                         <>
-                          <h5>Agregar carta al mazo</h5>
+                          <h5>{texts.decks.addCardTitle}</h5>
 
                           {collectionCards.length === 0 ? (
-                            <p>Primero agrega cartas a tu colección.</p>
+                            <p>{texts.decks.collectionEmpty}</p>
                           ) : availableCards.length === 0 ? (
-                            <p>Todas tus cartas ya están en este mazo.</p>
+                            <p>{texts.decks.allCardsAdded}</p>
                           ) : (
                             <form onSubmit={handleAddCard}>
                               <label htmlFor={`deck-card-${deck.id}`}>
-                                Selecciona una carta
+                                {texts.decks.selectCardLabel}
                               </label>
 
                               <select
@@ -587,11 +638,11 @@ async function handleDeleteDeck(deck) {
                                 }
                                 required
                               >
-                                <option value="">Selecciona una carta...</option>
+                                <option value="">{texts.decks.selectCardPlaceholder}</option>
 
                                 {availableCards.map((card) => (
                                   <option key={card.id} value={card.id}>
-                                    {card.displayName} — {card.quantity} unidades
+                                    {texts.decks.cardOption(card.displayName, card.quantity)}
                                   </option>
                                 ))}
                               </select>
@@ -600,15 +651,15 @@ async function handleDeleteDeck(deck) {
                                 type="submit"
                                 disabled={addingCard || !selectedUserCardId}
                               >
-                                {addingCard ? 'Agregando...' : 'Agregar al mazo'}
+                                {addingCard ? texts.decks.adding : texts.decks.addCard}
                               </button>
                             </form>
                           )}
 
-                          <h5>Cartas del mazo ({deckCards.length})</h5>
+                          <h5>{texts.decks.deckCardsTitle(deckCards.length)}</h5>
 
                           {deckCards.length === 0 ? (
-                            <p>Este mazo todavía no tiene cartas.</p>
+                            <p>{texts.decks.deckEmpty}</p>
                           ) : (
 
                           <div className="deck-card-list">
@@ -625,13 +676,13 @@ async function handleDeleteDeck(deck) {
                                   {card?.image ? (
                                     <img
                                       src={`${card.image}/low.webp`}
-                                      alt={`Carta de ${card.displayName}`}
+                                      alt={texts.decks.cardImageAlt(card.displayName)}
                                       className="deck-card-image"
                                       loading="lazy"
                                     />
                                   ) : (
                                     <div className="deck-card-image-placeholder">
-                                      Sin imagen
+                                      {texts.decks.noImage}
                                     </div>
                                   )}
 
@@ -641,13 +692,13 @@ async function handleDeleteDeck(deck) {
                                     </strong>
 
                                     <small>
-                                      En tu colección: {item.ownedQuantity}
+                                      {texts.decks.ownedQuantity(item.ownedQuantity)}
                                     </small>
 
                                     <div className="deck-card-controls">
                                       <button
                                         type="button"
-                                        aria-label={`Disminuir cantidad de ${card?.displayName || item.cardId}`}
+                                        aria-label={texts.decks.decreaseQuantity(card?.displayName || item.cardId)}
                                         disabled={
                                           busyCardId !== null ||
                                           item.quantity <= 1
@@ -663,7 +714,7 @@ async function handleDeleteDeck(deck) {
 
                                       <button
                                         type="button"
-                                        aria-label={`Aumentar cantidad de ${card?.displayName || item.cardId}`}
+                                        aria-label={texts.decks.increaseQuantity(card?.displayName || item.cardId)}
                                         disabled={
                                           busyCardId !== null ||
                                           item.quantity >= item.ownedQuantity
@@ -680,7 +731,7 @@ async function handleDeleteDeck(deck) {
                                   <button
                                     type="button"
                                     className="remove-deck-card-button"
-                                    aria-label={`Quitar ${card?.displayName || item.cardId} del mazo`}
+                                    aria-label={texts.decks.removeCard(card?.displayName || item.cardId)}
                                     disabled={busyCardId !== null}
                                     onClick={() => handleRemoveDeckCard(item)}
                                   >

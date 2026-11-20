@@ -1,11 +1,17 @@
 
-const API_URL = 'https://api.tcgdex.net/v2/es'
+const API_URL = 'https://api.tcgdex.net/v2'
+
+function getSupportedLanguage(language: string) {
+  return language === 'en' ? 'en' : 'es'
+}
 
 export async function getCardsFromTcgdex(
   search: string = '',
-  page: number = 1
+  page: number = 1,
+  language: string = 'es'
 ) {
-  const url = new URL(`${API_URL}/cards`)
+  const supportedLanguage = getSupportedLanguage(language)
+  const url = new URL(`${API_URL}/${supportedLanguage}/cards`)
 
   url.searchParams.set('pagination:page', String(page))
   url.searchParams.set('pagination:itemsPerPage', '12')
@@ -23,8 +29,12 @@ export async function getCardsFromTcgdex(
   return response.json()
 }
 
-export async function getCardFromTcgdex(cardId: string) {
-  const url = `${API_URL}/cards/${encodeURIComponent(cardId)}`
+export async function getCardFromTcgdex(
+  cardId: string,
+  language: string = 'es'
+) {
+  const supportedLanguage = getSupportedLanguage(language)
+  const url = `${API_URL}/${supportedLanguage}/cards/${encodeURIComponent(cardId)}`
 
   const response = await fetch(url)
 

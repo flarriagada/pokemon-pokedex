@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-function PokemonCard({ card, onAdd, adding = false }) {
+function PokemonCard({ card, onAdd, adding = false, texts }) {
   const [imageError, setImageError] = useState(false)
 
   // Algunas cartas tienen varios tipos y otras no tienen ninguno
@@ -27,34 +27,34 @@ function PokemonCard({ card, onAdd, adding = false }) {
       {imageUrl && !imageError ? (
         <img
           src={imageUrl}
-          alt={`Carta de ${card.name}`}
+          alt={texts.card.imageAlt(card.name)}
           className="pokemon-card-image"
           loading="lazy"
           onError={() => setImageError(true)}
         />
       ) : (
         <div className="pokemon-placeholder">
-          Imagen no disponible
+          {texts.card.noImage}
         </div>
       )}
 
       <h3>{card.name}</h3>
-      <p>N.º {card.localId}</p>
-      <p>ID: {card.id}</p>
+      <p>{texts.card.number} {card.localId}</p>
+      <p>{texts.card.id}: {card.id}</p>
       
       {/* Mostramos los detalles cuando la API los proporcione */}
       {hasDetails && (
         <div className="pokemon-card-details">
           <p>
-            <strong>Tipo:</strong> {cardType || 'No disponible'}
+            <strong>{texts.card.type}:</strong> {cardType || texts.card.unavailable}
           </p>
 
           <p>
-            <strong>Rareza:</strong> {card.rarity || 'No disponible'}
+            <strong>{texts.card.rarity}:</strong> {card.rarity || texts.card.unavailable}
           </p>
 
           <p>
-            <strong>Expansión:</strong> {card.set?.name || 'No disponible'}
+            <strong>{texts.card.expansion}:</strong> {card.set?.name || texts.card.unavailable}
           </p>
         </div>
       )}
@@ -66,7 +66,7 @@ function PokemonCard({ card, onAdd, adding = false }) {
          onClick={() => onAdd(card)}
          disabled={adding}
   >
-         {adding ? 'Agregando...' : 'Agregar a mi colección'}
+         {adding ? texts.card.adding : texts.card.add}
         </button>
 )}
 

@@ -334,3 +334,64 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Posicionamos el switch dentro del encabezado. */
+.site-header {
+  position: relative;
+  padding-top: 58px;
+}
+
+/* Switch pequeño en la esquina superior derecha. */
+.language-switch {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+
+  display: flex;
+  align-items: center;
+  gap: 2px;
+
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 999px;
+  background-color: rgba(0, 0, 0, 0.12);
+}
+
+/* Botones ES y EN. */
+.language-switch button {
+  border: none;
+  border-radius: 999px;
+  padding: 6px 12px;
+
+  background-color: transparent;
+  color: white;
+
+  font: inherit;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* Resaltamos el idioma seleccionado. */
+.language-switch button.is-active {
+  background-color: white;
+  color: #a51c2a;
+}
+
+.language-switch button:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 3px;
+}
+
+/* Ajustamos la posición en celulares. */
+@media (max-width: 600px) {
+  .site-header {
+    padding-top: 58px;
+  }
+
+  .language-switch {
+    top: 10px;
+    right: 12px;
+  }
+}
+

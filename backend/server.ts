@@ -8,6 +8,14 @@ import { handleDeckRequest } from './routes/deckRoutes.ts'
 const PORT = 8000
 const db = openDatabase()
 
+function getLanguage(url: URL): 'es' | 'en' | null {
+  const language = url.searchParams.get('lang') ?? 'es'
+
+  return language === 'es' || language === 'en'
+    ? language
+    : null
+}
+
 // Limpiamos las sesiones vencidas cada vez que inicia el servidor.
 const deletedSessions = cleanupExpiredSessions(db)
 
@@ -52,6 +60,14 @@ if (authResponse) {
     ) {
       const search = url.searchParams.get('search') ?? ''
       const page = Number(url.searchParams.get('page') ?? '1')
+      const language = getLanguage(url)
+
+      if (!language) {
+        return Response.json(
+          { error: 'Idioma inválido' },
+          { status: 400 }
+        )
+      }
 
       if (!Number.isInteger(page) || page < 1) {
         return Response.json(
@@ -61,7 +77,7 @@ if (authResponse) {
       }
 
       try {
-        const cards = await getCardsFromTcgdex(search, page)
+        const cards = await getCardsFromTcgdex(search, page, language)
         return Response.json(cards)
       } catch {
         return Response.json(
@@ -77,6 +93,14 @@ if (authResponse) {
 
     if (request.method === 'GET' && cardMatch) {
       let cardId: string
+      const language = getLanguage(url)
+
+      if (!language) {
+        return Response.json(
+          { error: 'Idioma inválido' },
+          { status: 400 }
+        )
+      }
 
       try {
         cardId = decodeURIComponent(cardMatch[1])
@@ -95,7 +119,7 @@ if (authResponse) {
       }
 
       try {
-        const card = await getCardFromTcgdex(cardId)
+        const card = await getCardFromTcgdex(cardId, language)
 
         if (!card) {
           return Response.json(

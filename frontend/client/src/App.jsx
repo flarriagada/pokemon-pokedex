@@ -4,31 +4,52 @@ import Header from './components/Header'
 import Collection from './pages/Collection'
 import Catalog from './components/Catalog.jsx'
 import Decks from './pages/Decks'
-
+import { useState } from 'react'
+import { translations } from './translations'
 import './App.css'
 
 function App() {
+
+// Idioma seleccionado por el usuario.
+const [language, setLanguage] = useState('es')
+
+// Seleccionamos los textos correspondientes.
+const texts = translations[language]
+
   return (
     <BrowserRouter>
-      <Header />
+      <Header
+       texts={texts}
+       language={language}
+       onLanguageChange={setLanguage}
+      />
 
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<Home texts={texts} />} />
 
-          <Route path="/catalog" element={<Catalog />} />
+          <Route
+            path="/catalog"
+            element={<Catalog texts={texts} language={language} />}
+          />
 
-          <Route path="/collection" element={<Collection />} />
-          
-          <Route path="/decks" element={<Decks />} />
+          <Route
+            path="/collection"
+            element={<Collection texts={texts} language={language} />}
+          />
+
+          <Route
+            path="/decks"
+            element={<Decks texts={texts} language={language} />}
+          />
 
           <Route
             path="*"
             element={
               <section>
-                <h2>Página no encontrada</h2>
-                <p>La dirección que ingresaste no existe.</p>
-                <Link to="/">Volver al inicio</Link>
+                <h2>{texts.notFound.title}</h2>
+                <p>{texts.notFound.description}</p>
+                <Link to="/">{texts.notFound.back}</Link>
               </section>
             }
           />

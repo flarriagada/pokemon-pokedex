@@ -2,25 +2,24 @@ import './Home.css'
 import { Link } from 'react-router'
 
 
-function Home() {
+function Home({texts}) {
   return (
     <section className="home">
-       <h2>Bienvenido a tu Pokédex</h2>
+       <h2>{texts.home.welcome}</h2>
 
       <p>
-        Consulta el catálogo de cartas Pokémon y accede
-        a las distintas secciones de tu colección.
+        {texts.home.description}
       </p>
 
       <div className="home-links">
         <Link to="/catalog" className="home-link">
-          <h3>Catálogo</h3>
-          <p>Busca cartas Pokémon y consulta sus imágenes.</p>
+          <h3>{texts.header.catalog}</h3>
+          <p>{texts.home.catalogDescription}</p>
         </Link>
 
         <Link to="/collection" className="home-link">
-          <h3>Mi colección</h3>
-          <p>Accede a la sección de tu inventario personal.</p>
+          <h3>{texts.header.collection}</h3>
+          <p>{texts.home.collectionDescription}</p>
         </Link>
       </div>
     </section>

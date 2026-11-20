@@ -7,13 +7,13 @@ import './Catalog.css'
 
 const CARDS_PER_PAGE = 12
 
-function Catalog() {
+function Catalog({ texts, language }) {
   const [searchText, setSearchText] = useState('')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [cards, setCards] = useState([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(false)
   const [addingCardId, setAddingCardId] = useState(null)
   const [addFeedback, setAddFeedback] = useState(null)
 
@@ -22,10 +22,10 @@ function Catalog() {
 
     async function loadCards() {
       setLoading(true)
-      setError('')
+      setError(false)
 
       try { //Obtenemos cartas resumidas del catálogo
-        const basicCards = await getCards(search, page)
+        const basicCards = await getCards(search, page, language)
 
         if (cancelled) return
         
@@ -36,7 +36,7 @@ function Catalog() {
         const completeCards = await Promise.all(
           basicCards.map(async (card) => {
             try{
-              const details = await getCardById(card.id)
+              const details = await getCardById(card.id, language)
               return details ?? card //si la API no entrega detalles conservamos la carta básica
             }
             catch {
@@ -51,7 +51,7 @@ function Catalog() {
       } catch {
         if (!cancelled) {
           setCards([])
-          setError('No se pudieron cargar las cartas.')
+          setError(true)
         }
       } finally {
         if (!cancelled) {
@@ -65,7 +65,7 @@ function Catalog() {
     return () => {
       cancelled = true
     }
-  }, [search, page])
+  }, [search, page, language])
 
   function handleSearch(event) {
     event.preventDefault()
@@ -91,12 +91,12 @@ async function handleAddToCollection(card) {
 
     setAddFeedback({
       type: 'success',
-      text: `${card.name} agregada. Cantidad: ${savedCard.quantity}`
+      name: card.name,
+      quantity: savedCard.quantity
     })
   } catch {
     setAddFeedback({
-      type: 'error',
-      text: 'No se pudo agregar la carta a tu colección.'
+      type: 'error'
     })
   } finally {
     setAddingCardId(null)
@@ -106,26 +106,26 @@ async function handleAddToCollection(card) {
 
   return (
     <section className="catalog">
-      <h2>Catálogo de cartas</h2>
-      <p>Explora o busca cartas Pokémon.</p>
+      <h2>{texts.catalog.title}</h2>
+      <p>{texts.catalog.description}</p>
 
       <form className="catalog-search" onSubmit={handleSearch}>
         <label htmlFor="card-search">
-          Buscar por nombre
+          {texts.catalog.searchLabel}
         </label>
 
         <input
           id="card-search"
           type="search"
-          placeholder="Ej.: Pikachu"
+          placeholder={texts.catalog.placeholder}
           value={searchText}
           onChange={(event) => setSearchText(event.target.value)}
         />
 
-        <button type="submit">Buscar</button>
+        <button type="submit">{texts.catalog.search}</button>
 
         <button type="button" onClick={showAll}>
-          Mostrar todo
+          {texts.catalog.showAll}
         </button>
       
       </form>
@@ -133,27 +133,22 @@ async function handleAddToCollection(card) {
       {/* Mensaje de confirmación o error al agregar una carta */}
       {addFeedback && (
         <p role={addFeedback.type === 'error' ? 'alert' : 'status'}>
-          {addFeedback.text}
+          {addFeedback.type === 'error'
+            ? texts.catalog.addError
+            : texts.catalog.added(addFeedback.name, addFeedback.quantity)}
         </p>
       )}
 
-      {loading && <p role="status">Cargando cartas...</p>}
+      {loading && <p role="status">{texts.catalog.loading}</p>}
 
-      {error && <p role="alert">{error}</p>}
-
-
-      {loading && <p role="status">Cargando cartas...</p>}
-
-      {error && <p role="alert">{error}</p>}
+      {error && <p role="alert">{texts.catalog.loadError}</p>}
 
       {!loading && !error && (
         <>
-          <p>
-            Página {page} · {cards.length} cartas mostradas
-          </p>
+          <p>{texts.catalog.pageInfo(page, cards.length)}</p>
 
           {cards.length === 0 ? (
-            <p>No se encontraron cartas en esta página.</p>
+            <p>{texts.catalog.empty}</p>
           ) : (
             <div className="pokemon-grid">
               {cards.map((card) => (
@@ -162,28 +157,29 @@ async function handleAddToCollection(card) {
                   card={card}
                   onAdd={handleAddToCollection}
                   adding={addingCardId === card.id}
+                  texts={texts}
                 />
               ))}
             </div>
           )}
 
-          <nav className="pagination" aria-label="Páginas del catálogo">
+          <nav className="pagination" aria-label={texts.catalog.paginationLabel}>
             <button
               type="button"
               disabled={page === 1}
               onClick={() => setPage((p) => p - 1)}
             >
-              Anterior
+              {texts.catalog.previous}
             </button>
 
-            <span>Página {page}</span>
+            <span>{texts.catalog.page(page)}</span>
 
             <button
               type="button"
               disabled={cards.length < CARDS_PER_PAGE}
               onClick={() => setPage((p) => p + 1)}
             >
-              Siguiente
+              {texts.catalog.next}
             </button>
           </nav>
         </>

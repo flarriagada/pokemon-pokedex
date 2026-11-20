@@ -1,8 +1,9 @@
 
-export async function getCards(search = '', page = 1) {
+export async function getCards(search = '', page = 1, language = 'es') {
   const params = new URLSearchParams()
 
   params.set('page', String(page))
+  params.set('lang', language === 'en' ? 'en' : 'es')
   if (search.trim()) {
     params.set('search', search.trim())
   }
@@ -16,10 +17,18 @@ export async function getCards(search = '', page = 1) {
   return response.json()
 }
 
-export async function getCardById(cardId) {
+export async function getCardById(cardId, language = 'es') {
+  const params = new URLSearchParams()
+
+  params.set('lang', language === 'en' ? 'en' : 'es')
+
   const response = await fetch(
-    `/api/cards/${encodeURIComponent(cardId)}`
+    `/api/cards/${encodeURIComponent(cardId)}?${params.toString()}`
   )
+
+  if (response.status === 404) {
+    return null
+  }
 
   if (!response.ok) {
     throw new Error('No se pudieron obtener los detalles')

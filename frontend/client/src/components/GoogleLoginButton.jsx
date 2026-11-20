@@ -4,18 +4,18 @@ import { getGoogleAuthConfig, loginWithGoogle, getCurrentUser, logoutFromPokedex
 import './GoogleLoginButton.css'
 import { useNavigate } from 'react-router'
 
-function GoogleLoginButton() {
+function GoogleLoginButton({ texts, language }) {
   const [clientId, setClientId] = useState('')
   const [isLoadingConfig, setIsLoadingConfig] = useState(true)
   const [scriptStatus, setScriptStatus] = useState('loading')
   const [verificationStatus, setVerificationStatus] = useState('idle')
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(null)
   const [attempt, setAttempt] = useState(0)
   const verificationController = useRef(null)
   const [sessionUser, setSessionUser] = useState(null)
   const [isCheckingSession, setIsCheckingSession] = useState(true)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
-  const [logoutError, setLogoutError] = useState('')
+  const [logoutError, setLogoutError] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -28,7 +28,7 @@ function GoogleLoginButton() {
       } catch (error) {
         if (!controller.signal.aborted) {
           setVerificationStatus('error')
-          setMessage(error.message)
+          setMessage({ type: 'service', value: error.message })
         }
       } finally {
         if (!controller.signal.aborted) setIsLoadingConfig(false)
@@ -45,7 +45,7 @@ function GoogleLoginButton() {
     const timeoutId = setTimeout(() => {
       setScriptStatus('error')
       setVerificationStatus('error')
-      setMessage('No se pudo cargar el botón de Google. Revisa tu conexión o los bloqueadores del navegador.')
+      setMessage({ type: 'translation', key: 'buttonLoadError' })
     }, 15000)
 
     return () => clearTimeout(timeoutId)
@@ -70,7 +70,7 @@ function GoogleLoginButton() {
       } catch {
         if (!controller.signal.aborted) {
           setVerificationStatus('error')
-          setMessage('No se pudo comprobar la sesión.')
+          setMessage({ type: 'translation', key: 'sessionCheckError' })
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -87,7 +87,7 @@ function GoogleLoginButton() {
   function handleScriptError() {
     setScriptStatus('error')
     setVerificationStatus('error')
-    setMessage('No se pudo cargar el botón de Google. Revisa tu conexión o los bloqueadores del navegador.')
+    setMessage({ type: 'translation', key: 'buttonLoadError' })
   }
 
   async function handleGoogleSuccess({ credential }) {
@@ -96,21 +96,21 @@ function GoogleLoginButton() {
     const controller = new AbortController()
     verificationController.current = controller
     setVerificationStatus('verifying')
-    setMessage('Verificando tu identidad con el servidor…')
+    setMessage({ type: 'translation', key: 'verifying' })
 
     try {
       const user= await loginWithGoogle(credential, controller.signal)
 
       if (!controller.signal.aborted) {
         setVerificationStatus('verified')
-        setMessage('Sesión creada correctamente con Google.')
+        setMessage({ type: 'translation', key: 'loginSuccess' })
         setSessionUser(user)
 
       }
     } catch (error) {
       if (!controller.signal.aborted) {
         setVerificationStatus('error')
-        setMessage(error.message)
+        setMessage({ type: 'service', value: error.message })
       }
     } finally {
       verificationController.current = null
@@ -119,14 +119,14 @@ function GoogleLoginButton() {
 
   function handleGoogleError() {
     setVerificationStatus('error')
-    setMessage('No se completó el acceso con Google. Vuelve a intentarlo y comprueba que este sitio esté autorizado en la configuración de Google.')
+    setMessage({ type: 'translation', key: 'accessError' })
   }
 
   function handleGoogleClick() {
     // Google puede cerrar la ventana sin emitir un callback de cancelación.
     // Solo mostramos carga cuando tenemos una credencial para verificar.
     setVerificationStatus('idle')
-    setMessage('Si cancelas o cierras la ventana de Google, puedes volver a intentarlo con el botón.')
+    setMessage({ type: 'translation', key: 'popupNote' })
   }
 
   // Cierra la sesión desde React.
@@ -134,7 +134,7 @@ function GoogleLoginButton() {
     if (isLoggingOut) return
 
     setIsLoggingOut(true)
-    setLogoutError('')
+    setLogoutError(false)
 
     try {
       // Solicitamos a Deno invalidar la sesión.
@@ -145,11 +145,11 @@ function GoogleLoginButton() {
 
       // Volvemos al estado inicial del login.
       setVerificationStatus('idle')
-      setMessage('Sesión cerrada correctamente.')
+      setMessage({ type: 'translation', key: 'logoutSuccess' })
       navigate('/', { replace: true }) //Volvemos al inicio, reemp la enrtrada actual del historial por inicio.
     } catch {
       // Si falla el servidor, mantenemos al usuario en pantalla.
-      setLogoutError('No se pudo cerrar la sesión. Inténtalo nuevamente.')
+      setLogoutError(true)
     } finally {
       setIsLoggingOut(false)
     }
@@ -160,18 +160,23 @@ function GoogleLoginButton() {
     setIsLoadingConfig(true)
     setScriptStatus('loading')
     setVerificationStatus('idle')
-    setMessage('')
+    setMessage(null)
     setAttempt(currentAttempt => currentAttempt + 1)
   }
 
   const isVerifying = verificationStatus === 'verifying'
   const canRetryConfig = !isLoadingConfig && (!clientId || scriptStatus === 'error')
+  const translatedMessage = message?.type === 'service'
+    ? texts.googleLogin.serviceError(message.value)
+    : message
+      ? texts.googleLogin[message.key]
+      : ''
 
   // Mostramos un mensaje mientras comprobamos la sesión.
   if (isCheckingSession) {
     return (
       <section className="google-login">
-        <p role="status">Comprobando sesión...</p>
+        <p role="status">{texts.googleLogin.checkingSession}</p>
       </section>
     )
   }
@@ -181,10 +186,9 @@ function GoogleLoginButton() {
      return (
     <section className="google-login">
       <p role="status">
-        Sesión iniciada
         {sessionUser.email
-          ? ` con ${sessionUser.email}`
-          : ' correctamente'}.
+          ? texts.googleLogin.sessionStarted(sessionUser.email)
+          : texts.googleLogin.sessionStartedDefault}
       </p>
 
       <button
@@ -193,12 +197,12 @@ function GoogleLoginButton() {
         onClick={handleLogout}
         disabled={isLoggingOut}
       >
-        {isLoggingOut ? 'Cerrando sesión...' : 'Cerrar sesión'}
+        {isLoggingOut ? texts.googleLogin.loggingOut : texts.googleLogin.logout}
       </button>
 
       {logoutError && (
         <p role="alert" className="google-login-message--error">
-          {logoutError}
+          {texts.googleLogin.logoutError}
         </p>
       )}
     </section>
@@ -206,23 +210,26 @@ function GoogleLoginButton() {
 }
 
   return (
-    <section className="google-login" aria-label="Verificación de identidad con Google">
-      {isLoadingConfig && <p role="status">Cargando configuración de Google…</p>}
+    <section className="google-login" aria-label={texts.googleLogin.identityLabel}>
+      {isLoadingConfig && <p role="status">{texts.googleLogin.loadingConfig}</p>}
 
       {clientId && scriptStatus !== 'error' && (
         <GoogleOAuthProvider
+          key={language}
           clientId={clientId}
-          locale="es"
+          locale={language}
           onScriptLoadSuccess={() => setScriptStatus('ready')}
           onScriptLoadError={handleScriptError}
         >
-          {scriptStatus === 'loading' && <p role="status">Cargando botón de Google…</p>}
+          {scriptStatus === 'loading' && <p role="status">{texts.googleLogin.loadingButton}</p>}
           <div hidden={scriptStatus !== 'ready' || isVerifying}>
             <GoogleLogin
+              key={language}
               onSuccess={handleGoogleSuccess}
               onError={handleGoogleError}
               click_listener={handleGoogleClick}
               text="signin_with"
+              locale={language}
               size="large"
               width="240"
               ux_mode="popup"
@@ -238,18 +245,18 @@ function GoogleLoginButton() {
           className={`google-login-message google-login-message--${verificationStatus}`}
           role={verificationStatus === 'error' ? 'alert' : 'status'}
         >
-          {message}
+          {translatedMessage}
         </p>
       )}
 
       {canRetryConfig && (
         <button className="google-login-retry" type="button" onClick={handleRetry}>
-          Reintentar
+          {texts.googleLogin.retry}
         </button>
       )}
       
       <p className="google-login-note">
-        Continúa con Google para iniciar sesión en tu Pokédex
+        {texts.googleLogin.note}
       </p>
 
     </section>
