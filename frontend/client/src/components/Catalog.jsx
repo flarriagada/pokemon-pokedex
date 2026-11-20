@@ -1,6 +1,6 @@
 
 import { useEffect, useState } from 'react'
-import { getCards } from '../services/cardService'
+import { getCards, getCardById } from '../services/cardService'
 import PokemonCard from './PokemonCard'
 import { addCardToCollection } from '../services/collectionService'
 import './Catalog.css'
@@ -24,11 +24,29 @@ function Catalog() {
       setLoading(true)
       setError('')
 
-      try {
-        const result = await getCards(search, page)
+      try { //Obtenemos cartas resumidas del catálogo
+        const basicCards = await getCards(search, page)
 
-        if (!cancelled) {
-          setCards(result)
+        if (cancelled) return
+        
+        //Mientras obtenemos los detalles mostramos las cartas básicas
+        setCards(basicCards)
+        setLoading(false)
+        //Consultamos info completa de las cartas
+        const completeCards = await Promise.all(
+          basicCards.map(async (card) => {
+            try{
+              const details = await getCardById(card.id)
+              return details ?? card //si la API no entrega detalles conservamos la carta básica
+            }
+            catch {
+              return card //Si tenemos un error en una carta, no afecta a las demás
+            }
+          })
+        )
+        // Actualizamos el catalogo solo si seguimos en esa página.
+        if (!cancelled){
+          setCards(completeCards)
         }
       } catch {
         if (!cancelled) {
