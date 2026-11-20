@@ -1,5 +1,5 @@
-
 import type { DatabaseSync } from 'node:sqlite'
+import { getUserFromSession } from '../services/sessionService.ts'
 
 export async function handleCollectionRequest(
   request: Request,
@@ -18,28 +18,47 @@ if (!isCollectionRoot && !itemMatch) {
   return null
 }
 
+// Obtenemos las cookies enviadas por el navegador.
+const cookies = request.headers.get('Cookie') ?? ''
 
-  // Acceso temporal solo para desarrollo local
-  if (Deno.env.get('APP_ENV') !== 'development') {
-    return Response.json(
-      { error: 'Autenticación requerida' },
-      { status: 401 }
-    )
-  }
+// Buscamos la cookie de nuestra sesión.
+const sessionCookie = cookies
+  .split(';')
+  .map((cookie) => cookie.trim())
+  .find((cookie) =>
+    cookie.startsWith('pokedex_session=')
+  )
 
-  const user = db.prepare(`
-    SELECT id FROM users
-    WHERE auth_issuer = ? AND auth_subject = ?
-  `).get('local-dev', 'test-user')
+// Extraemos el token de sesión.
+const token = sessionCookie
+  ? sessionCookie.slice('pokedex_session='.length)
+  : ''
 
-  if (!user) {
-    return Response.json(
-      { error: 'Usuario de prueba no encontrado' },
-      { status: 503 }
-    )
-  }
+// Comprobamos la sesión en SQLite y recuperamos el usuario.
+const user = await getUserFromSession(db, token)
 
-  const userId = Number(user.id)
+// Si no hay una sesión válida, rechazamos el acceso.
+if (!user) {
+  return Response.json(
+    { error: 'Debes iniciar sesión para acceder a tu colección' },
+    { status: 401 }
+  )
+}
+
+// Comprobamos el origen de las operaciones que modifican datos.
+if (
+  ['POST', 'PATCH', 'DELETE'].includes(request.method) &&
+  request.headers.get('Origin') !== 'http://localhost:5173'
+) {
+  return Response.json(
+    { error: 'Origen no autorizado' },
+    { status: 403 }
+  )
+}
+
+// Utilizamos el ID del usuario autenticado.
+const userId = user.id
+
 
   // GET: consultar la colección
   if (isCollectionRoot && request.method === 'GET') {
