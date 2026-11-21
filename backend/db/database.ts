@@ -84,6 +84,24 @@ export function openDatabase() {
         ON DELETE CASCADE
     );
 
+    -- Conserva un historial independiente de las cantidades del inventario.
+    CREATE TABLE IF NOT EXISTS card_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      card_id TEXT NOT NULL CHECK(length(trim(card_id)) BETWEEN 1 AND 100),
+      transaction_type TEXT NOT NULL
+        CHECK(transaction_type IN ('purchase', 'sale')),
+      quantity INTEGER NOT NULL CHECK(quantity > 0),
+      unit_price INTEGER NOT NULL CHECK(unit_price >= 0),
+      transaction_date TEXT NOT NULL,
+      notes TEXT CHECK(notes IS NULL OR length(notes) <= 250),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+    );
+
   `)
 
   // Agregamos la disponibilidad a inventarios creados anteriormente.

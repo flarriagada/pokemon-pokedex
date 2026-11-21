@@ -1,5 +1,6 @@
 
 const COLLECTION_URL = '/api/collection'
+const TRANSACTIONS_URL = '/api/transactions'
 
 export async function getCollection() {
   const response = await fetch(COLLECTION_URL)
@@ -77,4 +78,30 @@ export async function deleteCollectionCard(id) {
   if (!response.ok) {
     throw new Error('No se pudo eliminar la carta')
   }
+}
+
+export async function getTransactions() {
+  const response = await fetch(TRANSACTIONS_URL)
+
+  if (!response.ok) {
+    throw new Error('No se pudo obtener el historial')
+  }
+
+  return response.json()
+}
+
+export async function createTransaction(data) {
+  const response = await fetch(TRANSACTIONS_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  })
+
+  if (!response.ok) {
+    throw new Error('No se pudo registrar el movimiento')
+  }
+
+  return response.json()
 }

@@ -1,9 +1,44 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { getCollection, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard } from '../services/collectionService'
+import { getCollection, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard, getTransactions, createTransaction } from '../services/collectionService'
 import { getCardById, getSets, getSetById } from '../services/cardService'
 import PokemonCard from '../components/PokemonCard'
 import '../components/Catalog.css'
+
+function getLocalDateValue() {
+  const date = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function isValidDateValue(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+
+  const date = new Date(`${value}T00:00:00.000Z`)
+
+  return !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value
+}
+
+function formatClp(value, language, currency) {
+  const locale = language === 'en' ? 'en-US' : 'es-CL'
+  const formattedValue = new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 0
+  }).format(value)
+
+  return `${formattedValue} ${currency}`
+}
+
+function formatTransactionDate(value, language) {
+  const [year, month, day] = value.split('-').map(Number)
+  const date = new Date(year, month - 1, day)
+  const locale = language === 'en' ? 'en-US' : 'es-CL'
+
+  return date.toLocaleDateString(locale)
+}
 
 function Collection({ texts, language }) {
   const [cards, setCards] = useState([])
@@ -23,6 +58,19 @@ function Collection({ texts, language }) {
   const [setFilter, setSetFilter] = useState('all')
   const [addingMissingCardId, setAddingMissingCardId] = useState(null)
   const [setFeedback, setSetFeedback] = useState(null)
+  const [transactions, setTransactions] = useState([])
+  const [transactionsLoading, setTransactionsLoading] = useState(true)
+  const [transactionsError, setTransactionsError] = useState(false)
+  const [transactionCardDetails, setTransactionCardDetails] = useState({})
+  const [transactionCardId, setTransactionCardId] = useState('')
+  const [transactionType, setTransactionType] = useState('purchase')
+  const [transactionQuantity, setTransactionQuantity] = useState('1')
+  const [transactionUnitPrice, setTransactionUnitPrice] = useState('0')
+  const [transactionDate, setTransactionDate] = useState(getLocalDateValue)
+  const [transactionNotes, setTransactionNotes] = useState('')
+  const [transactionSaving, setTransactionSaving] = useState(false)
+  const [transactionMessage, setTransactionMessage] = useState('')
+  const [transactionFilter, setTransactionFilter] = useState('all')
 
 
   useEffect(() => {
@@ -165,6 +213,67 @@ function Collection({ texts, language }) {
     }
   }, [selectedSetId, language])
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadTransactions() {
+      try {
+        const result = await getTransactions()
+
+        if (!cancelled) {
+          setTransactions(Array.isArray(result) ? result : [])
+        }
+      } catch {
+        if (!cancelled) {
+          setTransactions([])
+          setTransactionsError(true)
+        }
+      } finally {
+        if (!cancelled) {
+          setTransactionsLoading(false)
+        }
+      }
+    }
+
+    loadTransactions()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (transactions.length === 0) return
+
+    let cancelled = false
+
+    async function loadTransactionCardDetails() {
+      const cardIds = [
+        ...new Set(transactions.map((transaction) => transaction.cardId))
+      ]
+      const entries = await Promise.all(
+        cardIds.map(async (cardId) => {
+          try {
+            const details = await getCardById(cardId, language)
+            return [cardId, details]
+          } catch {
+            return [cardId, null]
+          }
+        })
+      )
+
+      if (!cancelled) {
+        setTransactionCardDetails(Object.fromEntries(entries))
+      }
+    }
+
+    loadTransactionCardDetails()
+
+    return () => {
+      cancelled = true
+    }
+  }, [transactions, language])
+
 async function handleQuantityChange(item, newQuantity) {
   if (busyId !== null || busyTradeId !== null || newQuantity < 1) return
 
@@ -283,6 +392,83 @@ async function handleAddMissingCard(card) {
   }
 }
 
+async function handleTransactionSubmit(event) {
+  event.preventDefault()
+
+  if (transactionSaving) return
+
+  const quantity = Number(transactionQuantity)
+  const unitPrice = Number(transactionUnitPrice)
+  const normalizedNotes = transactionNotes.trim()
+
+  if (!cards.some((card) => card.cardId === transactionCardId)) {
+    setTransactionMessage('cardRequired')
+    return
+  }
+
+  if (transactionType !== 'purchase' && transactionType !== 'sale') {
+    setTransactionMessage('typeInvalid')
+    return
+  }
+
+  if (!Number.isSafeInteger(quantity) || quantity < 1) {
+    setTransactionMessage('quantityInvalid')
+    return
+  }
+
+  if (!Number.isSafeInteger(unitPrice) || unitPrice < 0) {
+    setTransactionMessage('unitPriceInvalid')
+    return
+  }
+
+  if (!Number.isSafeInteger(quantity * unitPrice)) {
+    setTransactionMessage('totalInvalid')
+    return
+  }
+
+  if (!isValidDateValue(transactionDate)) {
+    setTransactionMessage('dateInvalid')
+    return
+  }
+
+  if (normalizedNotes.length > 250) {
+    setTransactionMessage('notesTooLong')
+    return
+  }
+
+  setTransactionSaving(true)
+  setTransactionMessage('')
+
+  try {
+    const created = await createTransaction({
+      cardId: transactionCardId,
+      transactionType,
+      quantity,
+      unitPrice,
+      transactionDate,
+      notes: normalizedNotes || null
+    })
+
+    setTransactions((current) =>
+      [...current, created].sort((first, second) =>
+        second.transactionDate.localeCompare(first.transactionDate) ||
+        second.id - first.id
+      )
+    )
+    setTransactionCardId('')
+    setTransactionType('purchase')
+    setTransactionQuantity('1')
+    setTransactionUnitPrice('0')
+    setTransactionDate(getLocalDateValue())
+    setTransactionNotes('')
+    setTransactionMessage('success')
+  } catch {
+    setTransactionMessage('saveError')
+  } finally {
+    setTransactionSaving(false)
+  }
+}
+
   const totalCards = cards.reduce(
     (total, card) => total + card.quantity,
     0
@@ -314,6 +500,25 @@ async function handleAddMissingCard(card) {
     : setFilter === 'missing'
       ? missingSetCards
       : officialSetCards
+  const previewQuantity = Number(transactionQuantity)
+  const previewUnitPrice = Number(transactionUnitPrice)
+  const transactionPreviewTotal =
+    Number.isSafeInteger(previewQuantity) &&
+    Number.isSafeInteger(previewUnitPrice) &&
+    previewQuantity > 0 &&
+    previewUnitPrice >= 0 &&
+    Number.isSafeInteger(previewQuantity * previewUnitPrice)
+      ? previewQuantity * previewUnitPrice
+      : 0
+  const filteredTransactions = transactionFilter === 'purchase'
+    ? transactions.filter(
+        (transaction) => transaction.transactionType === 'purchase'
+      )
+    : transactionFilter === 'sale'
+      ? transactions.filter(
+          (transaction) => transaction.transactionType === 'sale'
+        )
+      : transactions
 
   return (
     <section className="collection">
@@ -609,6 +814,281 @@ async function handleAddMissingCard(card) {
             </div>
           )}
         </section>
+      )}
+
+      {!loading && !error && (
+        <details className="transaction-history">
+          <summary>{texts.transactions.title}</summary>
+
+          <div className="transaction-history-content">
+            <p>{texts.transactions.description}</p>
+            <p
+              id="transaction-inventory-notice"
+              className="transaction-inventory-notice"
+            >
+              {texts.transactions.inventoryNotice}
+            </p>
+
+            <form
+              className="transaction-form"
+              onSubmit={handleTransactionSubmit}
+              aria-describedby="transaction-inventory-notice"
+            >
+              <h4>{texts.transactions.formTitle}</h4>
+
+              {cards.length === 0 && (
+                <p>{texts.transactions.noCardsForForm}</p>
+              )}
+
+              <label htmlFor="transaction-card">
+                {texts.transactions.cardLabel}
+              </label>
+              <select
+                id="transaction-card"
+                value={transactionCardId}
+                onChange={(event) => setTransactionCardId(event.target.value)}
+                disabled={cards.length === 0 || transactionSaving}
+                required
+              >
+                <option value="">{texts.transactions.cardPlaceholder}</option>
+                {cards.map((card) => (
+                  <option key={card.id} value={card.cardId}>
+                    {card.details?.name || texts.collection.cardFallback(card.cardId)}
+                  </option>
+                ))}
+              </select>
+
+              <label htmlFor="transaction-type">
+                {texts.transactions.typeLabel}
+              </label>
+              <select
+                id="transaction-type"
+                value={transactionType}
+                onChange={(event) => setTransactionType(event.target.value)}
+                disabled={transactionSaving}
+              >
+                <option value="purchase">{texts.transactions.purchase}</option>
+                <option value="sale">{texts.transactions.sale}</option>
+              </select>
+
+              <label htmlFor="transaction-quantity">
+                {texts.transactions.quantityLabel}
+              </label>
+              <input
+                id="transaction-quantity"
+                type="number"
+                min="1"
+                step="1"
+                value={transactionQuantity}
+                onChange={(event) => setTransactionQuantity(event.target.value)}
+                disabled={transactionSaving}
+                required
+              />
+
+              <label htmlFor="transaction-unit-price">
+                {texts.transactions.unitPriceLabel}
+              </label>
+              <input
+                id="transaction-unit-price"
+                type="number"
+                min="0"
+                step="1"
+                value={transactionUnitPrice}
+                onChange={(event) => setTransactionUnitPrice(event.target.value)}
+                disabled={transactionSaving}
+                required
+              />
+
+              <label htmlFor="transaction-date">
+                {texts.transactions.dateLabel}
+              </label>
+              <input
+                id="transaction-date"
+                type="date"
+                value={transactionDate}
+                onChange={(event) => setTransactionDate(event.target.value)}
+                disabled={transactionSaving}
+                required
+              />
+
+              <label htmlFor="transaction-notes">
+                {texts.transactions.notesLabel}
+              </label>
+              <textarea
+                id="transaction-notes"
+                value={transactionNotes}
+                onChange={(event) => setTransactionNotes(event.target.value)}
+                placeholder={texts.transactions.notesPlaceholder}
+                maxLength={250}
+                rows={3}
+                disabled={transactionSaving}
+              />
+
+              <p className="transaction-total-preview">
+                {texts.transactions.totalPreview(
+                  formatClp(
+                    transactionPreviewTotal,
+                    language,
+                    texts.transactions.currency
+                  )
+                )}
+              </p>
+
+              {transactionMessage && (
+                <p role={transactionMessage === 'success' ? 'status' : 'alert'}>
+                  {texts.transactions[transactionMessage]}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={transactionSaving || cards.length === 0}
+              >
+                {transactionSaving
+                  ? texts.transactions.saving
+                  : texts.transactions.register}
+              </button>
+            </form>
+
+            <div className="transaction-history-list">
+              <h4>{texts.transactions.historyTitle}</h4>
+
+              {transactionsLoading && (
+                <p role="status">{texts.transactions.loading}</p>
+              )}
+
+              {transactionsError && (
+                <p role="alert">{texts.transactions.loadError}</p>
+              )}
+
+              {!transactionsLoading && !transactionsError && transactions.length === 0 && (
+                <p>{texts.transactions.empty}</p>
+              )}
+
+              {!transactionsLoading && !transactionsError && transactions.length > 0 && (
+                <>
+                  <div
+                    className="transaction-filters"
+                    role="group"
+                    aria-label={texts.transactions.filterLabel}
+                  >
+                    <button
+                      type="button"
+                      className={transactionFilter === 'all' ? 'is-active' : ''}
+                      aria-pressed={transactionFilter === 'all'}
+                      onClick={() => setTransactionFilter('all')}
+                    >
+                      {texts.transactions.all}
+                    </button>
+                    <button
+                      type="button"
+                      className={transactionFilter === 'purchase' ? 'is-active' : ''}
+                      aria-pressed={transactionFilter === 'purchase'}
+                      onClick={() => setTransactionFilter('purchase')}
+                    >
+                      {texts.transactions.purchases}
+                    </button>
+                    <button
+                      type="button"
+                      className={transactionFilter === 'sale' ? 'is-active' : ''}
+                      aria-pressed={transactionFilter === 'sale'}
+                      onClick={() => setTransactionFilter('sale')}
+                    >
+                      {texts.transactions.sales}
+                    </button>
+                  </div>
+
+                  {filteredTransactions.length === 0 ? (
+                    <p>{texts.transactions.noResults}</p>
+                  ) : (
+                    <div
+                      className="transaction-list"
+                      aria-label={texts.transactions.historyLabel}
+                    >
+                      {filteredTransactions.map((transaction) => {
+                        const collectionCard = cards.find(
+                          (card) => card.cardId === transaction.cardId
+                        )
+                        const details = transactionCardDetails[transaction.cardId] ??
+                          collectionCard?.details
+                        const cardName = details?.name || transaction.cardId
+                        const imageUrl = details?.image
+                          ? `${details.image}/low.webp`
+                          : null
+                        const totalPrice = transaction.totalPrice ??
+                          transaction.quantity * transaction.unitPrice
+
+                        return (
+                          <article
+                            key={transaction.id}
+                            className={`transaction-item transaction-item--${transaction.transactionType}`}
+                          >
+                            {imageUrl && (
+                              <img
+                                src={imageUrl}
+                                alt={texts.transactions.cardImageAlt(cardName)}
+                                loading="lazy"
+                                onLoad={(event) => {
+                                  event.currentTarget.hidden = false
+                                }}
+                                onError={(event) => {
+                                  event.currentTarget.hidden = true
+                                }}
+                              />
+                            )}
+
+                            <div className="transaction-item-content">
+                              <div className="transaction-item-heading">
+                                <strong>{cardName}</strong>
+                                <span>
+                                  {transaction.transactionType === 'purchase'
+                                    ? texts.transactions.purchase
+                                    : texts.transactions.sale}
+                                </span>
+                              </div>
+                              <p>{texts.transactions.quantity(transaction.quantity)}</p>
+                              <p>
+                                {texts.transactions.unitPrice(
+                                  formatClp(
+                                    transaction.unitPrice,
+                                    language,
+                                    texts.transactions.currency
+                                  )
+                                )}
+                              </p>
+                              <p>
+                                <strong>
+                                  {texts.transactions.total(
+                                    formatClp(
+                                      totalPrice,
+                                      language,
+                                      texts.transactions.currency
+                                    )
+                                  )}
+                                </strong>
+                              </p>
+                              <p>
+                                {texts.transactions.date(
+                                  formatTransactionDate(
+                                    transaction.transactionDate,
+                                    language
+                                  )
+                                )}
+                              </p>
+                              {transaction.notes && (
+                                <p>{texts.transactions.notes(transaction.notes)}</p>
+                              )}
+                            </div>
+                          </article>
+                        )
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </details>
       )}
     </section>
   )

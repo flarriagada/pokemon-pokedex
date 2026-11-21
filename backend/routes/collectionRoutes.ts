@@ -1,6 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { getUserFromSession } from '../services/sessionService.ts'
 
+function isValidTransactionDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+
+  const date = new Date(`${value}T00:00:00.000Z`)
+
+  return !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value
+}
+
 export async function handleCollectionRequest(
   request: Request,
   url: URL,
@@ -9,6 +18,7 @@ export async function handleCollectionRequest(
 
 
 const isCollectionRoot = url.pathname === '/api/collection'
+const isTransactionsRoot = url.pathname === '/api/transactions'
 
 const itemMatch = url.pathname.match(
   /^\/api\/collection\/(\d+)$/
@@ -18,7 +28,12 @@ const tradeMatch = url.pathname.match(
   /^\/api\/collection\/(\d+)\/trade$/
 )
 
-if (!isCollectionRoot && !itemMatch && !tradeMatch) {
+if (
+  !isCollectionRoot &&
+  !isTransactionsRoot &&
+  !itemMatch &&
+  !tradeMatch
+) {
   return null
 }
 
@@ -62,6 +77,156 @@ if (
 
 // Utilizamos el ID del usuario autenticado.
 const userId = user.id
+
+  if (isTransactionsRoot && request.method === 'GET') {
+    const transactions = db.prepare(`
+      SELECT
+        id,
+        card_id AS cardId,
+        transaction_type AS transactionType,
+        quantity,
+        unit_price AS unitPrice,
+        transaction_date AS transactionDate,
+        notes,
+        created_at AS createdAt,
+        quantity * unit_price AS totalPrice
+      FROM card_transactions
+      WHERE user_id = ?
+      ORDER BY transaction_date DESC, id DESC
+    `).all(userId)
+
+    return Response.json(transactions)
+  }
+
+  if (isTransactionsRoot && request.method === 'POST') {
+    let body: unknown
+
+    try {
+      body = await request.json()
+    } catch {
+      return Response.json(
+        { error: 'JSON inválido' },
+        { status: 400 }
+      )
+    }
+
+    if (
+      body === null ||
+      typeof body !== 'object' ||
+      Array.isArray(body)
+    ) {
+      return Response.json(
+        { error: 'Datos inválidos' },
+        { status: 400 }
+      )
+    }
+
+    const data = body as Record<string, unknown>
+    const cardId = data.cardId
+    const transactionType = data.transactionType
+    const quantity = data.quantity
+    const unitPrice = data.unitPrice
+    const transactionDate = data.transactionDate
+    const notes = data.notes
+
+    if (
+      typeof cardId !== 'string' ||
+      !cardId.trim() ||
+      cardId.length > 100 ||
+      (transactionType !== 'purchase' && transactionType !== 'sale') ||
+      typeof quantity !== 'number' ||
+      !Number.isSafeInteger(quantity) ||
+      quantity < 1 ||
+      typeof unitPrice !== 'number' ||
+      !Number.isSafeInteger(unitPrice) ||
+      unitPrice < 0 ||
+      !Number.isSafeInteger(quantity * unitPrice) ||
+      typeof transactionDate !== 'string' ||
+      !isValidTransactionDate(transactionDate) ||
+      (
+        notes !== undefined &&
+        notes !== null &&
+        typeof notes !== 'string'
+      )
+    ) {
+      return Response.json(
+        { error: 'Datos del movimiento inválidos' },
+        { status: 400 }
+      )
+    }
+
+    const normalizedCardId = cardId.trim()
+    const normalizedNotes = typeof notes === 'string'
+      ? notes.trim()
+      : ''
+
+    if (normalizedNotes.length > 250) {
+      return Response.json(
+        { error: 'Observaciones demasiado extensas' },
+        { status: 400 }
+      )
+    }
+
+    const ownedCard = db.prepare(`
+      SELECT id
+      FROM user_cards
+      WHERE user_id = ? AND card_id = ?
+    `).get(userId, normalizedCardId)
+
+    if (!ownedCard) {
+      return Response.json(
+        { error: 'Carta no encontrada en la colección' },
+        { status: 404 }
+      )
+    }
+
+    const result = db.prepare(`
+      INSERT INTO card_transactions (
+        user_id,
+        card_id,
+        transaction_type,
+        quantity,
+        unit_price,
+        transaction_date,
+        notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      userId,
+      normalizedCardId,
+      transactionType,
+      quantity,
+      unitPrice,
+      transactionDate,
+      normalizedNotes || null
+    )
+
+    const createdTransaction = db.prepare(`
+      SELECT
+        id,
+        card_id AS cardId,
+        transaction_type AS transactionType,
+        quantity,
+        unit_price AS unitPrice,
+        transaction_date AS transactionDate,
+        notes,
+        created_at AS createdAt,
+        quantity * unit_price AS totalPrice
+      FROM card_transactions
+      WHERE id = ? AND user_id = ?
+    `).get(result.lastInsertRowid, userId)
+
+    return Response.json(createdTransaction, { status: 201 })
+  }
+
+  if (isTransactionsRoot) {
+    return Response.json(
+      { error: 'Método no permitido' },
+      {
+        status: 405,
+        headers: { Allow: 'GET, POST' }
+      }
+    )
+  }
 
 
   // GET: consultar la colección
