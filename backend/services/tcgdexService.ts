@@ -49,3 +49,34 @@ export async function getCardFromTcgdex(
   return response.json()
 }
 
+export async function getSetsFromTcgdex(language: string = 'es') {
+  const supportedLanguage = getSupportedLanguage(language)
+  const url = `${API_URL}/${supportedLanguage}/sets`
+  const response = await fetch(url)
+
+  if (!response.ok) {
+    throw new Error('Error al consultar las expansiones de TCGdex')
+  }
+
+  return response.json()
+}
+
+export async function getSetFromTcgdex(
+  setId: string,
+  language: string = 'es'
+) {
+  const supportedLanguage = getSupportedLanguage(language)
+  const url = `${API_URL}/${supportedLanguage}/sets/${encodeURIComponent(setId)}`
+  const response = await fetch(url)
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error('Error al consultar los detalles de la expansión')
+  }
+
+  return response.json()
+}
+

@@ -72,6 +72,35 @@ export const translations = {
       increase: (name) => `Agregar una unidad de ${name}`
     },
 
+    setCompletion: {
+      title: 'Cartas faltantes por expansión',
+      description: 'Selecciona una expansión para revisar tu progreso y las cartas que te faltan.',
+      selectLabel: 'Expansión',
+      selectPlaceholder: 'Selecciona una expansión...',
+      loadingSets: 'Cargando expansiones...',
+      loadSetsError: 'No se pudieron cargar las expansiones.',
+      loadingSet: 'Cargando cartas de la expansión...',
+      loadSetError: 'No se pudieron cargar las cartas de la expansión.',
+      setNotFound: 'La expansión no está disponible en este idioma.',
+      selectPrompt: 'Selecciona una expansión para ver sus cartas.',
+      emptySet: 'Esta expansión no contiene cartas disponibles.',
+      emptyCollection: 'Tu colección está vacía; todas las cartas de esta expansión están pendientes.',
+      totalCards: (count) => `Cartas de la expansión: ${count}`,
+      ownedCards: (count) => `Tienes: ${count}`,
+      missingCards: (count) => `Te faltan: ${count}`,
+      completion: (percentage) => `Completado: ${percentage}%`,
+      progressLabel: (name, percentage) => `Progreso de ${name}: ${percentage}%`,
+      filterLabel: 'Filtrar cartas de la expansión',
+      all: 'Todas',
+      owned: 'Las que tengo',
+      missing: 'Las que faltan',
+      ownedStatus: 'En tu colección',
+      missingStatus: 'Faltante',
+      noFilterResults: 'No hay cartas para mostrar con este filtro.',
+      added: (name, quantity) => `${name} agregada. Cantidad: ${quantity}`,
+      addError: 'No se pudo agregar la carta a tu colección.'
+    },
+
     card: {
       imageAlt: (name) => `Carta de ${name}`,
       noImage: 'Imagen no disponible',
@@ -273,6 +302,35 @@ export const translations = {
       deleteError: 'Could not delete the card.',
       decrease: (name) => `Remove one ${name} card`,
       increase: (name) => `Add one ${name} card`
+    },
+
+    setCompletion: {
+      title: 'Missing cards by expansion',
+      description: 'Select an expansion to review your progress and the cards you are missing.',
+      selectLabel: 'Expansion',
+      selectPlaceholder: 'Select an expansion...',
+      loadingSets: 'Loading expansions...',
+      loadSetsError: 'Could not load the expansions.',
+      loadingSet: 'Loading expansion cards...',
+      loadSetError: 'Could not load the expansion cards.',
+      setNotFound: 'This expansion is not available in the selected language.',
+      selectPrompt: 'Select an expansion to view its cards.',
+      emptySet: 'This expansion does not contain any available cards.',
+      emptyCollection: 'Your collection is empty; every card in this expansion is still missing.',
+      totalCards: (count) => `Cards in expansion: ${count}`,
+      ownedCards: (count) => `Owned: ${count}`,
+      missingCards: (count) => `Missing: ${count}`,
+      completion: (percentage) => `Completed: ${percentage}%`,
+      progressLabel: (name, percentage) => `${name} progress: ${percentage}%`,
+      filterLabel: 'Filter expansion cards',
+      all: 'All',
+      owned: 'Owned',
+      missing: 'Missing',
+      ownedStatus: 'In your collection',
+      missingStatus: 'Missing',
+      noFilterResults: 'There are no cards to display with this filter.',
+      added: (name, quantity) => `${name} added. Quantity: ${quantity}`,
+      addError: 'Could not add the card to your collection.'
     },
 
     card: {

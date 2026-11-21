@@ -1,4 +1,9 @@
-import { getCardsFromTcgdex , getCardFromTcgdex} from './services/tcgdexService.ts'
+import {
+  getCardsFromTcgdex,
+  getCardFromTcgdex,
+  getSetsFromTcgdex,
+  getSetFromTcgdex
+} from './services/tcgdexService.ts'
 import { openDatabase } from './db/database.ts'
 import { handleCollectionRequest } from './routes/collectionRoutes.ts'
 import { handleAuthRequest } from './routes/authRoutes.ts'
@@ -132,6 +137,84 @@ if (authResponse) {
       } catch {
         return Response.json(
           { error: 'No se pudieron obtener los detalles' },
+          { status: 502 }
+        )
+      }
+    }
+
+    if (
+      request.method === 'GET' &&
+      url.pathname === '/api/sets'
+    ) {
+      const language = getLanguage(url)
+
+      if (!language) {
+        return Response.json(
+          { error: 'Idioma inválido' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        const sets = await getSetsFromTcgdex(language)
+        return Response.json(sets)
+      } catch {
+        return Response.json(
+          { error: 'No se pudieron obtener las expansiones' },
+          { status: 502 }
+        )
+      }
+    }
+
+    const setMatch = url.pathname.match(
+      /^\/api\/sets\/([^/]+)$/
+    )
+
+    if (request.method === 'GET' && setMatch) {
+      let setId: string
+      const language = getLanguage(url)
+
+      if (!language) {
+        return Response.json(
+          { error: 'Idioma inválido' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        setId = decodeURIComponent(setMatch[1])
+      } catch {
+        return Response.json(
+          { error: 'Identificador inválido' },
+          { status: 400 }
+        )
+      }
+
+      if (
+        !setId.trim() ||
+        setId.length > 100 ||
+        !/^[a-zA-Z0-9._-]+$/.test(setId)
+      ) {
+        return Response.json(
+          { error: 'Identificador inválido' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        const set = await getSetFromTcgdex(setId, language)
+
+        if (!set) {
+          return Response.json(
+            { error: 'Expansión no encontrada' },
+            { status: 404 }
+          )
+        }
+
+        return Response.json(set)
+      } catch {
+        return Response.json(
+          { error: 'No se pudieron obtener los detalles de la expansión' },
           { status: 502 }
         )
       }
