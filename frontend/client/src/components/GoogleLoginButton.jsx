@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google'
-import { getGoogleAuthConfig, verifyGoogleCredential } from '../services/authService'
+import { getGoogleAuthConfig, loginWithGoogle } from '../services/authService'
 import './GoogleLoginButton.css'
 
 function GoogleLoginButton() {
@@ -64,11 +64,11 @@ function GoogleLoginButton() {
     setMessage('Verificando tu identidad con el servidor…')
 
     try {
-      await verifyGoogleCredential(credential, controller.signal)
+      await loginWithGoogle(credential, controller.signal)
 
       if (!controller.signal.aborted) {
         setVerificationStatus('verified')
-        setMessage('Identidad verificada correctamente con Google.')
+        setMessage('Sesión creada correctamente con Google.')
       }
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -146,10 +146,12 @@ function GoogleLoginButton() {
           Reintentar
         </button>
       )}
-
+      
       <p className="google-login-note">
-        Esta prueba verifica tu identidad. Todavía no inicia una sesión en Mi Pokédex.
+        Tu sesión se ha creado correctamente.
+        Próximamente podrás mantenerla al recargar la página.
       </p>
+
     </section>
   )
 }

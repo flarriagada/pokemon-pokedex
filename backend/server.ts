@@ -19,7 +19,8 @@ console.log('Solicitud recibida:', request.method, url.pathname)
 
 const authResponse = await handleAuthRequest(
   request,
-  url
+  url,
+  db
 )
 
 if (authResponse) {

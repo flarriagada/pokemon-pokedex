@@ -1,9 +1,13 @@
+import type { DatabaseSync } from 'node:sqlite'
+import { findOrCreateGoogleUser } from '../db/userRepository.ts'
+import { createSession } from '../services/sessionService.ts'
 
 import { verifyGoogleCredential } from '../services/googleAuthService.ts'
 
 export async function handleAuthRequest(
   request: Request,
-  url: URL
+  url: URL,
+  db :DatabaseSync
 ): Promise<Response | null> {
 
   if (url.pathname === '/api/auth/google/config') {
@@ -30,10 +34,26 @@ export async function handleAuthRequest(
     )
   }
 
-  if (url.pathname !== '/api/auth/google/verify') {
-    return null //Preguntamos si la solicitud corresponde a nuestra ruta de autenticacion
-    //Si no corresponde, se siguen procesando las demás rutas 
+  // Distinguimos entre verificar una identidad e iniciar una sesión.
+  const isVerify = url.pathname === '/api/auth/google/verify'
+  const isLogin = url.pathname === '/api/auth/google/login'
+
+  if (!isVerify && !isLogin) {
+    return null
   }
+
+  // Solo aceptamos el inicio de sesión desde nuestro frontend local.
+  // Esto ayuda a prevenir solicitudes de autenticación desde otros sitios.
+  if (
+    isLogin &&
+    request.headers.get('Origin') !== 'http://localhost:5173'
+  ) {
+    return Response.json(
+      { error: 'Origen no autorizado' },
+      { status: 403 }
+    )
+  }
+
 
   if (request.method !== 'POST') { //Comprobamos el método
     return Response.json(
@@ -78,19 +98,75 @@ export async function handleAuthRequest(
     )
   }
 
-  try {
-    const profile = await verifyGoogleCredential(
-      body.credential //utilizamos función de verificación si es valido devuelve el perfil verificado, si falla responde con 401
-    )
+  
+  let profile: Awaited<ReturnType<typeof verifyGoogleCredential>>
 
-    return Response.json(
-      { valid: true, profile },
-      { headers: { 'Cache-Control': 'no-store' } }
-    )
+  // Primero verificamos que el JWT realmente provenga de Google.
+  try {
+    profile = await verifyGoogleCredential(body.credential)
   } catch {
     return Response.json(
       { error: 'No se pudo verificar el token de Google' },
       { status: 401 }
     )
   }
+
+  // Conservamos la ruta original de solo verificación.
+  if (isVerify) {
+    return Response.json(
+      { valid: true, profile },
+      { headers: { 'Cache-Control': 'no-store' } }
+    )
+  }
+
+  try {
+    // Buscamos al usuario en SQLite o lo registramos si es nuevo.
+    const userId = findOrCreateGoogleUser(
+      db,
+      profile.googleSubject,
+      profile.email
+    )
+
+    // Generamos el token y guardamos su hash en la tabla sessions.
+    const { token, expiresAt } = await createSession(
+      db,
+      userId
+    )
+
+    // Calculamos cuántos segundos durará la cookie.
+    const maxAge = Math.max(
+      0,
+      expiresAt - Math.floor(Date.now() / 1000)
+    )
+
+    // En HTTPS agregamos Secure. En localhost HTTP no es necesario.
+    const secure = url.protocol === 'https:' ? '; Secure' : ''
+
+    // HttpOnly impide que JavaScript lea el token de la cookie.
+    const cookie =
+      `pokedex_session=${token}; HttpOnly; SameSite=Lax; ` +
+      `Path=/; Max-Age=${maxAge}${secure}`
+
+    return Response.json(
+      {
+        authenticated: true,
+        user: {
+          id: userId,
+          email: profile.email
+        }
+      },
+      {
+        headers: {
+          'Set-Cookie': cookie,
+          'Cache-Control': 'no-store'
+        }
+      }
+    )
+  } catch {
+    return Response.json(
+      { error: 'No se pudo crear la sesión' },
+      { status: 500 }
+    )
+  }
+
 }
