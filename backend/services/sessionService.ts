@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { insertSession, findActiveSessionUser } from '../db/sessionRepository.ts'
 
-const SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60
+const SESSION_DURATION_SECONDS = 2 * 24 * 60 * 60
 
 // Calcula el hash SHA-256 de un token de sesión.
 async function hashSessionToken(token: string): Promise<string> {
