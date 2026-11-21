@@ -1,7 +1,22 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { insertSession } from '../db/sessionRepository.ts'
+import { insertSession, findActiveSessionUser } from '../db/sessionRepository.ts'
 
 const SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60
+
+// Calcula el hash SHA-256 de un token de sesión.
+async function hashSessionToken(token: string): Promise<string> {
+  const encodedToken = new TextEncoder().encode(token)
+
+  const hashBuffer = await crypto.subtle.digest(
+    'SHA-256',
+    encodedToken
+  )
+
+  return Array.from(
+    new Uint8Array(hashBuffer),
+    (byte) => byte.toString(16).padStart(2, '0')
+  ).join('')
+}
 
 export async function generateSessionCredentials() {
 
@@ -17,20 +32,7 @@ export async function generateSessionCredentials() {
     byte.toString(16).padStart(2, '0')
   ).join('')
 
-  // Transformamos el token en bytes para calcular su hash.
-  const encodedToken = new TextEncoder().encode(token)
-
-  // Calculamos el hash SHA-256 del token.
-  const hashBuffer = await crypto.subtle.digest(
-    'SHA-256',
-    encodedToken
-  )
-
-  // Convertimos el resultado del hash a texto hexadecimal.
-  const tokenHash = Array.from(
-    new Uint8Array(hashBuffer),
-    (byte) => byte.toString(16).padStart(2, '0')
-  ).join('')
+  const tokenHash = await hashSessionToken(token)
 
   // Definimos que la sesión vencerá en 7 días.
   // Date.now() entrega milisegundos; SQLite usará segundos Unix.
@@ -68,4 +70,21 @@ export async function createSession(
     token,
     expiresAt
   }
+}
+
+// Recupera el usuario asociado a un token de sesión.
+export async function getUserFromSession(
+  db: DatabaseSync,
+  token: string
+) {
+  // Verificamos que tenga el formato de nuestros tokens.
+  if (!/^[0-9a-f]{64}$/.test(token)) {
+    return null
+  }
+
+  // Calculamos el mismo hash que guardamos al crear la sesión.
+  const tokenHash = await hashSessionToken(token)
+
+  // Buscamos al usuario solamente si la sesión está vigente.
+  return findActiveSessionUser(db, tokenHash)
 }

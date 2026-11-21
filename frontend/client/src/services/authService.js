@@ -109,3 +109,40 @@ export async function loginWithGoogle(credential, signal) {
 
   return result.user
 }
+
+// Consulta al backend si existe una sesión activa.
+export async function getCurrentUser(signal) {
+  let response
+
+  try {
+    response = await fetch('/api/auth/me', {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal
+    })
+  } catch (error) {
+    if (signal.aborted) throw error
+    throw new Error('No se pudo comprobar la sesión.')
+  }
+
+  // Un 401 significa que no existe una sesión válida.
+  if (response.status === 401) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error('No se pudo consultar la sesión.')
+  }
+
+  const data = await response.json()
+
+  if (
+    data.authenticated !== true ||
+    !Number.isSafeInteger(data.user?.id)
+  ) {
+    throw new Error('Respuesta de sesión inválida.')
+  }
+
+  return data.user
+}
