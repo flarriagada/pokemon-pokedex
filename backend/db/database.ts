@@ -102,6 +102,39 @@ export function openDatabase() {
         ON DELETE CASCADE
     );
 
+    -- Etiquetas privadas creadas por cada usuario.
+    CREATE TABLE IF NOT EXISTS tags (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL COLLATE NOCASE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+      FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+      UNIQUE(user_id, name),
+      CHECK(name = trim(name)),
+      CHECK(length(name) BETWEEN 1 AND 40)
+    );
+
+    -- Relaciona las etiquetas con registros concretos del inventario.
+    CREATE TABLE IF NOT EXISTS user_card_tags (
+      user_card_id INTEGER NOT NULL,
+      tag_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+      PRIMARY KEY (user_card_id, tag_id),
+
+      FOREIGN KEY (user_card_id)
+        REFERENCES user_cards(id)
+        ON DELETE CASCADE,
+
+      FOREIGN KEY (tag_id)
+        REFERENCES tags(id)
+        ON DELETE CASCADE
+    );
+
   `)
 
   // Agregamos la disponibilidad a inventarios creados anteriormente.

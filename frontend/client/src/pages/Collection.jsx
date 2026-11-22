@@ -15,11 +15,15 @@ import '../components/Catalog.css'
 const PHOTO_MAX_BYTES = 8 * 1024 * 1024
 const PHOTO_MAX_DIMENSION = 6000
 const PHOTO_MAX_PIXELS = 20_000_000
+const PHOTO_MIN_CARD_WIDTH = 150
+const PHOTO_MIN_CARD_HEIGHT = 205
+const VISUAL_MATCH_CONCURRENCY = 4
 const PHOTO_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/webp'
 ])
+const visualFingerprintCache = new Map()
 
 function normalizeMatchValue(value) {
   return String(value ?? '')
@@ -34,6 +38,21 @@ function cleanOcrLine(value) {
   return value
     .replace(/[|]/g, 'I')
     .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function cleanDetectedCardName(value) {
+  return cleanOcrLine(String(value ?? ''))
+    .replace(
+      /^(?:(?:basic|básico|stage|fase)s*(?:\d+)?\s+(?:pokémon\s+)?|pokémon\s+(?:basic|básico)\s+)/i,
+      ''
+    )
+    .replace(
+      /\s+(?:\d{1,3}\s*(?:HP|PS|PV)|(?:HP|PS|PV)\s*\d{1,3})\b.*$/i,
+      ''
+    )
+    .replace(/^(?:es|is)\s+(?=[A-ZÁÉÍÓÚÑ])/u, '')
+    .replace(/^[^\p{L}\d]+|[^\p{L}\d'’&:.-]+$/gu, '')
     .trim()
 }
 
@@ -110,7 +129,7 @@ function extractSpecializedCollectionNumber(text) {
 
   for (const line of lines) {
     const match = line.match(
-      /\b([a-z0-9]{1,10})\s*(?:[\\|:;.-]|\s+)\s*([a-z0-9]{2,10})\b/i
+      /\b([a-z0-9]{1,10})\s*[\\|:;]\s*([a-z0-9]{2,10})\b/i
     )
     const number = normalizeCollectionToken(match?.[1])
     const total = normalizeCollectionToken(match?.[2])
@@ -119,6 +138,37 @@ function extractSpecializedCollectionNumber(text) {
   }
 
   return standardResult
+}
+
+function selectBestCollectionNumber(values) {
+  return values
+    .filter((value) => value.number)
+    .sort((first, second) => {
+      const score = (value) =>
+        (value.total ? 100 : 0) +
+        (/[A-Z]/i.test(value.number) ? 30 : 0) +
+        Math.min(value.number.length, 10)
+
+      return score(second) - score(first)
+    })[0] ?? { number: '', total: '' }
+}
+
+function extractTopCardName(text) {
+  const candidates = String(text ?? '')
+    .split(/\r?\n/)
+    .map(cleanDetectedCardName)
+    .filter((line) => {
+      const letters = line.match(/\p{L}/gu) ?? []
+
+      return line.length >= 2 &&
+        line.length <= 50 &&
+        letters.length >= 2 &&
+        !isMetadataLine(line) &&
+        !line.includes('/') &&
+        !/^\d+$/u.test(line)
+    })
+
+  return selectBestDetectedName(candidates)
 }
 
 function getCollectionNumberQuery(value) {
@@ -155,14 +205,7 @@ function extractOcrFields(text) {
     .slice(0, 15)
     .map((line, index) => {
       const hasHp = /\b(?:\d{1,3}\s*(?:HP|PS)|(?:HP|PS)\s*\d{1,3})\b/i.test(line)
-      const cleaned = line
-        .replace(
-          /^(?:(?:basic|básico)\s+(?:pokémon\s+)?|pokémon\s+(?:basic|básico)\s+)/i,
-          ''
-        )
-        .replace(/\s+(?:\d{1,3}\s*(?:HP|PS)|(?:HP|PS)\s*\d{1,3})\b.*$/i, '')
-        .replace(/^[^\p{L}]+|[^\p{L}'’.-]+$/gu, '')
-        .trim()
+      const cleaned = cleanDetectedCardName(line)
       const letters = (cleaned.match(/\p{L}/gu) ?? []).length
       const valid = cleaned.length >= 2 &&
         cleaned.length <= 50 &&
@@ -213,20 +256,6 @@ function extractSpecializedHp(text) {
     : ''
 }
 
-function mergePhotoFields(primary, secondary, preferredKeys = []) {
-  const merged = { ...primary }
-
-  for (const key of Object.keys(merged)) {
-    if (preferredKeys.includes(key)) {
-      merged[key] = secondary[key] || primary[key]
-    } else if (!merged[key]) {
-      merged[key] = secondary[key] || ''
-    }
-  }
-
-  return merged
-}
-
 function scoreDetectedName(value) {
   const name = String(value ?? '').trim()
   const letters = name.match(/\p{L}/gu) ?? []
@@ -250,12 +279,15 @@ function selectBestDetectedName(values) {
 }
 
 function getPhotoNameQueries(value) {
-  const name = String(value ?? '').trim()
+  const name = cleanDetectedCardName(value)
   const words = name.match(/[\p{L}'’-]+/gu) ?? []
-  const longestWord = [...words].sort(
+  const usefulWords = words.filter((word) =>
+    word.length >= 4 && !/^(?:basic|basico|stage|fase|pokemon)$/i.test(word)
+  )
+  const longestWord = [...usefulWords].sort(
     (first, second) => second.length - first.length
   )[0] ?? ''
-  const queries = [name]
+  const queries = [name, ...usefulWords]
 
   if (longestWord.length >= 4) queries.push(longestWord)
   if (longestWord.length >= 5) queries.push(longestWord.slice(0, 4))
@@ -334,6 +366,65 @@ function scorePhotoCandidate(card, fields) {
   }
 
   return score
+}
+
+function getPhotoCandidateEvidence(card, fields, visualSimilarity = 0) {
+  const detectedName = normalizeMatchValue(fields.name)
+  const candidateName = normalizeMatchValue(card.name)
+  const detectedNumber = normalizeCollectionComparison(fields.number)
+  const candidateNumber = normalizeCollectionComparison(card.localId)
+  const detectedTotal = normalizeCollectionComparison(fields.total)
+  const candidateTotal = normalizeCollectionComparison(
+    card.set?.cardCount?.official
+  )
+  const detectedHp = fields.hp ? Number(fields.hp) : Number.NaN
+  const candidateHp = Number(card.hp)
+  const nameExact = Boolean(
+    detectedName && candidateName && detectedName === candidateName
+  )
+  const namePartial = Boolean(
+    detectedName &&
+    candidateName &&
+    (
+      candidateName.includes(detectedName) ||
+      detectedName.includes(candidateName)
+    )
+  )
+  const numberExact = Boolean(
+    detectedNumber &&
+    candidateNumber &&
+    detectedNumber === candidateNumber
+  )
+  const totalExact = Boolean(
+    detectedTotal && candidateTotal && detectedTotal === candidateTotal
+  )
+  const hpExact = Number.isInteger(detectedHp) &&
+    Number.isInteger(candidateHp) &&
+    detectedHp === candidateHp
+  const nameMatches = nameExact || namePartial
+  const visualStrong = visualSimilarity >= 0.72
+  const visualUseful = visualSimilarity >= 0.58
+  const reliable = (nameMatches && numberExact) ||
+    (numberExact && totalExact) ||
+    (nameExact && hpExact) ||
+    (visualStrong && (nameMatches || numberExact))
+  const plausible = nameMatches || numberExact || visualUseful
+  const visualScore = visualUseful
+    ? Math.round((visualSimilarity - 0.4) * 500)
+    : 0
+
+  return {
+    score: scorePhotoCandidate(card, fields) + visualScore,
+    nameExact,
+    nameMatches,
+    numberExact,
+    totalExact,
+    hpExact,
+    visualSimilarity,
+    visualStrong,
+    reliable,
+    plausible
+  }
 }
 
 function findStrongestEdge(scores, start, end) {
@@ -480,6 +571,41 @@ function detectLikelyCardBounds(image) {
   }
 }
 
+function isCardTooSmallForOcr(cardBounds) {
+  return cardBounds.width < PHOTO_MIN_CARD_WIDTH ||
+    cardBounds.height < PHOTO_MIN_CARD_HEIGHT
+}
+
+function normalizePhotoCrop(cardBounds, image) {
+  const left = cardBounds.x / image.width * 100
+  const top = cardBounds.y / image.height * 100
+  const right = (cardBounds.x + cardBounds.width) / image.width * 100
+  const bottom = (cardBounds.y + cardBounds.height) / image.height * 100
+
+  return {
+    left: Math.max(0, Math.min(90, left)),
+    top: Math.max(0, Math.min(90, top)),
+    right: Math.max(10, Math.min(100, right)),
+    bottom: Math.max(10, Math.min(100, bottom))
+  }
+}
+
+function getPhotoCropBounds(image, crop) {
+  if (!crop) return detectLikelyCardBounds(image)
+
+  const x = image.width * crop.left / 100
+  const y = image.height * crop.top / 100
+  const right = image.width * crop.right / 100
+  const bottom = image.height * crop.bottom / 100
+
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y)
+  }
+}
+
 function createProcessedPhotoRegion(
   image,
   cardBounds,
@@ -550,6 +676,201 @@ function createProcessedPhotoRegion(
 
   context.putImageData(imageData, 0, 0)
   return canvas
+}
+
+function createVisualSample(
+  image,
+  bounds,
+  region,
+  width,
+  height
+) {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+
+  if (!context) return null
+
+  context.drawImage(
+    image,
+    bounds.x + bounds.width * region.x,
+    bounds.y + bounds.height * region.y,
+    bounds.width * region.width,
+    bounds.height * region.height,
+    0,
+    0,
+    width,
+    height
+  )
+
+  let pixels
+
+  try {
+    pixels = context.getImageData(0, 0, width, height).data
+  } catch {
+    return null
+  }
+
+  const grayscale = new Float32Array(width * height)
+  const histogram = new Float32Array(64)
+  let mean = 0
+
+  for (let index = 0; index < grayscale.length; index += 1) {
+    const offset = index * 4
+    const red = pixels[offset]
+    const green = pixels[offset + 1]
+    const blue = pixels[offset + 2]
+    const gray = red * 0.299 + green * 0.587 + blue * 0.114
+    const bucket = Math.floor(red / 64) * 16 +
+      Math.floor(green / 64) * 4 +
+      Math.floor(blue / 64)
+
+    grayscale[index] = gray
+    histogram[bucket] += 1
+    mean += gray
+  }
+
+  mean /= grayscale.length
+  let variance = 0
+
+  for (const value of grayscale) {
+    variance += (value - mean) ** 2
+  }
+
+  const deviation = Math.max(1, Math.sqrt(variance / grayscale.length))
+
+  for (let index = 0; index < grayscale.length; index += 1) {
+    grayscale[index] = (grayscale[index] - mean) / deviation
+  }
+
+  let histogramLength = 0
+
+  for (const value of histogram) histogramLength += value ** 2
+  histogramLength = Math.max(1, Math.sqrt(histogramLength))
+
+  for (let index = 0; index < histogram.length; index += 1) {
+    histogram[index] /= histogramLength
+  }
+
+  return { grayscale, histogram }
+}
+
+function createCardVisualFingerprint(image, bounds) {
+  const full = createVisualSample(
+    image,
+    bounds,
+    { x: 0.055, y: 0.035, width: 0.89, height: 0.93 },
+    20,
+    28
+  )
+  const artwork = createVisualSample(
+    image,
+    bounds,
+    { x: 0.08, y: 0.13, width: 0.84, height: 0.48 },
+    20,
+    14
+  )
+
+  return full && artwork ? { full, artwork } : null
+}
+
+function compareVisualSamples(first, second) {
+  if (!first || !second) return 0
+
+  let correlation = 0
+  let histogramSimilarity = 0
+
+  for (let index = 0; index < first.grayscale.length; index += 1) {
+    correlation += first.grayscale[index] * second.grayscale[index]
+  }
+
+  correlation = Math.max(
+    0,
+    Math.min(1, correlation / first.grayscale.length)
+  )
+
+  for (let index = 0; index < first.histogram.length; index += 1) {
+    histogramSimilarity += first.histogram[index] * second.histogram[index]
+  }
+
+  return correlation * 0.7 +
+    Math.max(0, Math.min(1, histogramSimilarity)) * 0.3
+}
+
+function compareCardVisualFingerprints(first, second) {
+  if (!first || !second) return 0
+
+  return compareVisualSamples(first.artwork, second.artwork) * 0.7 +
+    compareVisualSamples(first.full, second.full) * 0.3
+}
+
+async function getRemoteCardFingerprint(image) {
+  const urls = getCardImageUrls(image)
+
+  for (const url of urls) {
+    if (visualFingerprintCache.has(url)) {
+      try {
+        return await visualFingerprintCache.get(url)
+      } catch {
+        continue
+      }
+    }
+
+    const request = (async () => {
+      const response = await fetch(url)
+
+      if (!response.ok) throw new Error('Imagen de referencia no disponible')
+
+      const blob = await response.blob()
+      const bitmap = await createImageBitmap(blob)
+
+      try {
+        return createCardVisualFingerprint(bitmap, {
+          x: 0,
+          y: 0,
+          width: bitmap.width,
+          height: bitmap.height
+        })
+      } finally {
+        bitmap.close()
+      }
+    })()
+
+    visualFingerprintCache.set(url, request)
+
+    try {
+      return await request
+    } catch {
+      if (visualFingerprintCache.get(url) === request) {
+        visualFingerprintCache.delete(url)
+      }
+    }
+  }
+
+  return null
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index], index)
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(limit, items.length) },
+      () => worker()
+    )
+  )
+
+  return results
 }
 
 async function loadPhotoImage(file) {
@@ -685,6 +1006,8 @@ function Collection({ texts, language, view = 'collection' }) {
   const [photoPanelOpen, setPhotoPanelOpen] = useState(false)
   const [photoFile, setPhotoFile] = useState(null)
   const [photoPreviewUrl, setPhotoPreviewUrl] = useState('')
+  const [photoCrop, setPhotoCrop] = useState(null)
+  const [showPhotoCrop, setShowPhotoCrop] = useState(false)
   const [photoPhase, setPhotoPhase] = useState('idle')
   const [photoStep, setPhotoStep] = useState('idle')
   const [photoProgress, setPhotoProgress] = useState(0)
@@ -712,6 +1035,7 @@ function Collection({ texts, language, view = 'collection' }) {
   const photoRunId = useRef(0)
   const photoPreviewUrlRef = useRef('')
   const photoPanelOpenRef = useRef(false)
+  const automaticPhotoCrop = useRef(null)
 
   useEffect(() => {
     imageLanguage.current = language
@@ -1251,6 +1575,9 @@ function Collection({ texts, language, view = 'collection' }) {
     setPhotoPanelOpen(false)
     setPhotoFile(null)
     setPhotoPreviewUrl('')
+    setPhotoCrop(null)
+    setShowPhotoCrop(false)
+    automaticPhotoCrop.current = null
     setPhotoPhase('idle')
     setPhotoStep('idle')
     setPhotoProgress(0)
@@ -1268,6 +1595,7 @@ function Collection({ texts, language, view = 'collection' }) {
   async function handlePhotoFileChange(event) {
     const file = event.target.files?.[0] ?? null
     photoRunId.current += 1
+    const runId = photoRunId.current
     setPhotoError('')
     setPhotoPhase('idle')
     setPhotoStep('idle')
@@ -1281,6 +1609,9 @@ function Collection({ texts, language, view = 'collection' }) {
 
     setPhotoFile(null)
     setPhotoPreviewUrl('')
+    setPhotoCrop(null)
+    setShowPhotoCrop(false)
+    automaticPhotoCrop.current = null
 
     if (!file) return
 
@@ -1298,8 +1629,16 @@ function Collection({ texts, language, view = 'collection' }) {
 
     const previewUrl = URL.createObjectURL(file)
 
+    let detectedCrop
+
     try {
       const dimensions = await getImageDimensions(previewUrl)
+
+      if (photoRunId.current !== runId) {
+        URL.revokeObjectURL(previewUrl)
+        return
+      }
+
       const tooLarge = dimensions.width > PHOTO_MAX_DIMENSION ||
         dimensions.height > PHOTO_MAX_DIMENSION ||
         dimensions.width * dimensions.height > PHOTO_MAX_PIXELS
@@ -1310,16 +1649,82 @@ function Collection({ texts, language, view = 'collection' }) {
         event.target.value = ''
         return
       }
+
+      const loadedImage = await loadPhotoImage(file)
+
+      try {
+        if (photoRunId.current !== runId) {
+          URL.revokeObjectURL(previewUrl)
+          return
+        }
+
+        detectedCrop = normalizePhotoCrop(
+          detectLikelyCardBounds(loadedImage.image),
+          loadedImage.image
+        )
+      } finally {
+        loadedImage.close()
+      }
     } catch {
       URL.revokeObjectURL(previewUrl)
+
+      if (photoRunId.current !== runId) return
+
       setPhotoError('invalidImage')
       event.target.value = ''
       return
     }
 
+    if (photoRunId.current !== runId) {
+      URL.revokeObjectURL(previewUrl)
+      return
+    }
+
     photoPreviewUrlRef.current = previewUrl
+    automaticPhotoCrop.current = detectedCrop
     setPhotoFile(file)
     setPhotoPreviewUrl(previewUrl)
+    setPhotoCrop(detectedCrop)
+  }
+
+  function handlePhotoCropChange(edge, value) {
+    const numericValue = Number(value)
+
+    if (!Number.isFinite(numericValue)) return
+
+    photoRunId.current += 1
+    setPhotoError('')
+    setPhotoPhase('idle')
+    setPhotoStep('idle')
+    resetPhotoResults()
+    setPhotoCrop((current) => {
+      if (!current) return current
+
+      const next = { ...current }
+
+      if (edge === 'left') {
+        next.left = Math.min(numericValue, current.right - 10)
+      } else if (edge === 'right') {
+        next.right = Math.max(numericValue, current.left + 10)
+      } else if (edge === 'top') {
+        next.top = Math.min(numericValue, current.bottom - 10)
+      } else if (edge === 'bottom') {
+        next.bottom = Math.max(numericValue, current.top + 10)
+      }
+
+      return next
+    })
+  }
+
+  function handleResetPhotoCrop() {
+    if (!automaticPhotoCrop.current) return
+
+    photoRunId.current += 1
+    setPhotoError('')
+    setPhotoPhase('idle')
+    setPhotoStep('idle')
+    resetPhotoResults()
+    setPhotoCrop({ ...automaticPhotoCrop.current })
   }
 
   async function getPhotoOcrWorker() {
@@ -1384,41 +1789,30 @@ function Collection({ texts, language, view = 'collection' }) {
     return result.data.text ?? ''
   }
 
-  async function readPhotoFields(worker, file, runId) {
-    await worker.setParameters({
-      tessedit_pageseg_mode: '3',
-      tessedit_char_whitelist: ''
-    })
-    const fullResult = await worker.recognize(file)
-
-    if (photoRunId.current !== runId) return null
-
-    let fields = extractOcrFields(fullResult.data.text ?? '')
-    const needsNumberRegion = !fields.number || !fields.total
-    const needsTopRegion = !fields.name ||
-      (!fields.hp && needsNumberRegion)
-
-    if (!needsTopRegion && !needsNumberRegion) return fields
-
+  async function readPhotoFields(worker, file, runId, crop) {
     setPhotoStep('identifying')
     const loadedImage = await loadPhotoImage(file)
 
     try {
-      const cardBounds = detectLikelyCardBounds(loadedImage.image)
+      const cardBounds = getPhotoCropBounds(loadedImage.image, crop)
 
-      if (needsTopRegion) {
-        const nameRegion = {
-          x: 0.18,
-          y: 0.105,
-          width: 0.58,
-          height: 0.095
-        }
+      if (isCardTooSmallForOcr(cardBounds)) {
+        throw new Error('photoTooDistant')
+      }
+
+      const nameRegions = [
+        { x: 0.12, y: 0.025, width: 0.64, height: 0.095 },
+        { x: 0.07, y: 0.055, width: 0.72, height: 0.105 }
+      ]
+      const nameCandidates = []
+
+      for (const nameRegion of nameRegions) {
         const topText = await recognizePhotoRegion(
           worker,
           loadedImage.image,
           cardBounds,
           nameRegion,
-          { scale: 6, contrast: 1.45 },
+          { scale: 8, contrast: 1.45 },
           {
             tessedit_pageseg_mode: '7',
             tessedit_char_whitelist: ''
@@ -1426,20 +1820,15 @@ function Collection({ texts, language, view = 'collection' }) {
         )
 
         if (photoRunId.current !== runId) return null
+        nameCandidates.push(extractTopCardName(topText))
 
-        const topFields = extractOcrFields(topText)
-        let bestName = selectBestDetectedName([
-          fields.name,
-          topFields.name
-        ])
-
-        if (scoreDetectedName(bestName) < 18) {
+        if (scoreDetectedName(nameCandidates.at(-1)) < 18) {
           const binaryTopText = await recognizePhotoRegion(
             worker,
             loadedImage.image,
             cardBounds,
             nameRegion,
-            { scale: 6, contrast: 1.3, binary: true },
+            { scale: 8, contrast: 1.3, binary: true },
             {
               tessedit_pageseg_mode: '13',
               tessedit_char_whitelist: ''
@@ -1447,107 +1836,100 @@ function Collection({ texts, language, view = 'collection' }) {
           )
 
           if (photoRunId.current !== runId) return null
-
-          bestName = selectBestDetectedName([
-            bestName,
-            extractOcrFields(binaryTopText).name
-          ])
-        }
-
-        fields = {
-          ...fields,
-          name: bestName || fields.name
-        }
-
-        if (!fields.hp) {
-          const hpText = await recognizePhotoRegion(
-            worker,
-            loadedImage.image,
-            cardBounds,
-            { x: 0.6, y: 0.105, width: 0.38, height: 0.095 },
-            { scale: 6, contrast: 1.45 },
-            {
-              tessedit_pageseg_mode: '7',
-              tessedit_char_whitelist: '0123456789HPhppsPS '
-            }
-          )
-
-          if (photoRunId.current !== runId) return null
-
-          fields = {
-            ...fields,
-            hp: extractSpecializedHp(hpText) || fields.hp
-          }
+          nameCandidates.push(extractTopCardName(binaryTopText))
         }
       }
 
-      if (!fields.number || !fields.total) {
-        const numberParameters = {
-          tessedit_pageseg_mode: '8',
-          tessedit_char_whitelist:
-            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/\\|:;.- '
+      let name = selectBestDetectedName(nameCandidates)
+
+      if (!name) {
+        const broadTopText = await recognizePhotoRegion(
+          worker,
+          loadedImage.image,
+          cardBounds,
+          { x: 0.03, y: 0.015, width: 0.94, height: 0.18 },
+          { scale: 6, contrast: 1.35 },
+          {
+            tessedit_pageseg_mode: '11',
+            tessedit_char_whitelist: ''
+          }
+        )
+
+        if (photoRunId.current !== runId) return null
+        name = extractTopCardName(broadTopText)
+      }
+
+      const hpText = await recognizePhotoRegion(
+        worker,
+        loadedImage.image,
+        cardBounds,
+        { x: 0.67, y: 0.02, width: 0.3, height: 0.105 },
+        { scale: 8, contrast: 1.45 },
+        {
+          tessedit_pageseg_mode: '7',
+          tessedit_char_whitelist: '0123456789HPhppsPSPVpv '
         }
-        const numberRegion = {
-          x: 0.68,
-          y: 0.9,
-          width: 0.3,
-          height: 0.095
-        }
-        const cornerText = await recognizePhotoRegion(
+      )
+
+      if (photoRunId.current !== runId) return null
+
+      const numberParameters = {
+        tessedit_pageseg_mode: '7',
+        tessedit_char_whitelist:
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/\\|:;.- '
+      }
+      const numberRegions = [
+        { x: 0.02, y: 0.865, width: 0.62, height: 0.125 },
+        { x: 0.54, y: 0.865, width: 0.44, height: 0.125 },
+        { x: 0.02, y: 0.84, width: 0.96, height: 0.15 }
+      ]
+      const numberCandidates = []
+
+      for (const numberRegion of numberRegions) {
+        const numberText = await recognizePhotoRegion(
           worker,
           loadedImage.image,
           cardBounds,
           numberRegion,
-          { scale: 8, contrast: 1.55 },
+          { scale: 8, contrast: 1.5 },
           numberParameters
         )
 
         if (photoRunId.current !== runId) return null
+        let numberData = extractSpecializedCollectionNumber(numberText)
 
-        let numberData = extractSpecializedCollectionNumber(cornerText)
-
-        if (!numberData.number || !numberData.total) {
-          const binaryCornerText = await recognizePhotoRegion(
+        if (!numberData.number) {
+          const binaryNumberText = await recognizePhotoRegion(
             worker,
             loadedImage.image,
             cardBounds,
             numberRegion,
-            { scale: 8, contrast: 1.4, binary: true },
+            { scale: 8, contrast: 1.35, binary: true },
             numberParameters
           )
 
           if (photoRunId.current !== runId) return null
-
-          numberData = extractSpecializedCollectionNumber(binaryCornerText)
+          numberData = extractSpecializedCollectionNumber(binaryNumberText)
         }
 
-        fields = mergePhotoFields(fields, {
-          number: numberData.number,
-          total: numberData.total
-        }, ['number', 'total'])
+        if (numberData.number) numberCandidates.push(numberData)
+        if (numberData.number && numberData.total) break
+      }
 
-        if (!fields.number || !fields.total) {
-          const bottomText = await recognizePhotoRegion(
-            worker,
-            loadedImage.image,
-            cardBounds,
-            { x: 0.02, y: 0.86, width: 0.96, height: 0.135 },
-            { scale: 5, contrast: 1.35, binary: true },
-            {
-              ...numberParameters,
-              tessedit_pageseg_mode: '11'
-            }
-          )
+      const numberData = selectBestCollectionNumber(numberCandidates)
+      const visualFingerprint = createCardVisualFingerprint(
+        loadedImage.image,
+        cardBounds
+      )
 
-          if (photoRunId.current !== runId) return null
-
-          const bottomNumber = extractSpecializedCollectionNumber(bottomText)
-
-          fields = mergePhotoFields(fields, {
-            number: bottomNumber.number,
-            total: bottomNumber.total
-          }, ['number', 'total'])
-        }
+      return {
+        name,
+        number: numberData.number,
+        total: numberData.total,
+        hp: extractSpecializedHp(hpText),
+        expansion: '',
+        illustrator: '',
+        visualFingerprint
       }
     } finally {
       loadedImage.close()
@@ -1557,7 +1939,6 @@ function Collection({ texts, language, view = 'collection' }) {
       })
     }
 
-    return fields
   }
 
   async function fetchPhotoCards(
@@ -1651,7 +2032,7 @@ function Collection({ texts, language, view = 'collection' }) {
       cleanOcrLine(String(fields.number ?? ''))
     ])
     const normalizedFields = {
-      name: fields.name.trim(),
+      name: cleanDetectedCardName(fields.name),
       number: numberFromField.number || getCollectionNumberQuery(fields.number),
       total: fields.total.trim() || numberFromField.total,
       hp: fields.hp.trim(),
@@ -1688,8 +2069,7 @@ function Collection({ texts, language, view = 'collection' }) {
         const key = [
           name,
           number,
-          exactLocalId,
-          normalizedFields.hp
+          exactLocalId
         ].join(':')
 
         if (!requests.has(key)) {
@@ -1698,8 +2078,7 @@ function Collection({ texts, language, view = 'collection' }) {
             fetchPhotoCards(
               name,
               number,
-              exactLocalId,
-              normalizedFields.hp
+              exactLocalId
             )
           )
         }
@@ -1804,13 +2183,62 @@ function Collection({ texts, language, view = 'collection' }) {
           }
         })
       )
-      const sortedCandidates = detailedCandidates
-        .sort(
-          (a, b) =>
-            scorePhotoCandidate(b, normalizedFields) -
-            scorePhotoCandidate(a, normalizedFields)
-        )
+      const candidatesWithVisual = await mapWithConcurrency(
+        detailedCandidates,
+        VISUAL_MATCH_CONCURRENCY,
+        async (card) => {
+          if (!fields.visualFingerprint) {
+            return { card, visualSimilarity: 0 }
+          }
+
+          try {
+            const candidateFingerprint = await getRemoteCardFingerprint(
+              card.image
+            )
+
+            return {
+              card,
+              visualSimilarity: compareCardVisualFingerprints(
+                fields.visualFingerprint,
+                candidateFingerprint
+              )
+            }
+          } catch {
+            return { card, visualSimilarity: 0 }
+          }
+        }
+      )
+
+      if (photoRunId.current !== runId) return
+
+      const rankedCandidates = candidatesWithVisual
+        .map(({ card, visualSimilarity }) => ({
+          card,
+          evidence: getPhotoCandidateEvidence(
+            card,
+            normalizedFields,
+            visualSimilarity
+          )
+        }))
+        .filter((candidate) => candidate.evidence.plausible)
+        .sort((a, b) => b.evidence.score - a.evidence.score)
         .slice(0, 8)
+      const sortedCandidates = rankedCandidates.map(({ card }) => card)
+      const strongestCandidate = rankedCandidates[0]
+      const secondCandidate = rankedCandidates[1]
+      const scoreDifference = strongestCandidate
+        ? strongestCandidate.evidence.score -
+          (secondCandidate?.evidence.score ?? Number.NEGATIVE_INFINITY)
+        : 0
+      const hasReliableMatch = Boolean(
+        strongestCandidate?.evidence.reliable &&
+        (
+          strongestCandidate.evidence.numberExact &&
+          strongestCandidate.evidence.totalExact ||
+          !secondCandidate ||
+          scoreDifference >= 80
+        )
+      )
 
       if (photoRunId.current !== runId) return
 
@@ -1818,7 +2246,16 @@ function Collection({ texts, language, view = 'collection' }) {
       setPhotoImageStates({})
       setPhotoError(sortedCandidates.length === 0 ? 'noMatches' : '')
       setPhotoPhase('idle')
-      setPhotoStep(sortedCandidates.length === 0 ? 'idle' : 'found')
+      setPhotoStep(
+        sortedCandidates.length === 0
+          ? 'idle'
+          : hasReliableMatch
+            ? 'found'
+            : 'review'
+      )
+      setShowOtherPhotoMatches(
+        !hasReliableMatch && sortedCandidates.length > 1
+      )
       setPhotoHasAnalyzed(true)
     } catch {
       if (photoRunId.current !== runId) return
@@ -1852,17 +2289,27 @@ function Collection({ texts, language, view = 'collection' }) {
 
       if (photoRunId.current !== runId) return
 
-      const fields = await readPhotoFields(worker, photoFile, runId)
+      const fields = await readPhotoFields(
+        worker,
+        photoFile,
+        runId,
+        photoCrop
+      )
 
       if (photoRunId.current !== runId || !fields) return
 
       setPhotoFields(fields)
       await searchPhotoCandidates(fields, runId)
-    } catch {
+    } catch (error) {
       if (photoRunId.current !== runId) return
 
-      releasePhotoWorker()
-      setPhotoError('ocrError')
+      const errorKey = error instanceof Error &&
+          error.message === 'photoTooDistant'
+        ? 'photoTooDistant'
+        : 'ocrError'
+
+      if (errorKey === 'ocrError') releasePhotoWorker()
+      setPhotoError(errorKey)
       setPhotoPhase('idle')
       setPhotoStep('idle')
       setPhotoHasAnalyzed(true)
@@ -2437,11 +2884,75 @@ async function handleTransactionSubmit(event) {
             <small>{texts.photoIdentification.fileHelp}</small>
 
             {photoPreviewUrl && (
-              <img
-                src={photoPreviewUrl}
-                alt={texts.photoIdentification.previewAlt}
-                className="photo-identification-preview"
-              />
+              <>
+                <div className="photo-preview-frame">
+                  <img
+                    src={photoPreviewUrl}
+                    alt={texts.photoIdentification.previewAlt}
+                    className="photo-identification-preview"
+                  />
+                  {photoCrop && (
+                    <span
+                      className="photo-crop-outline"
+                      aria-hidden="true"
+                      style={{
+                        left: `${photoCrop.left}%`,
+                        top: `${photoCrop.top}%`,
+                        width: `${photoCrop.right - photoCrop.left}%`,
+                        height: `${photoCrop.bottom - photoCrop.top}%`
+                      }}
+                    />
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  className="photo-secondary-button photo-crop-toggle"
+                  aria-expanded={showPhotoCrop}
+                  onClick={() => setShowPhotoCrop((current) => !current)}
+                >
+                  {showPhotoCrop
+                    ? texts.photoIdentification.hideFraming
+                    : texts.photoIdentification.adjustFraming}
+                </button>
+
+                {showPhotoCrop && photoCrop && (
+                  <div className="photo-crop-controls">
+                    <p>{texts.photoIdentification.framingHelp}</p>
+
+                    {[
+                      ['left', texts.photoIdentification.cropLeft, 0, 80],
+                      ['right', texts.photoIdentification.cropRight, 20, 100],
+                      ['top', texts.photoIdentification.cropTop, 0, 80],
+                      ['bottom', texts.photoIdentification.cropBottom, 20, 100]
+                    ].map(([edge, label, min, max]) => (
+                      <label key={edge}>
+                        <span>{label}</span>
+                        <input
+                          type="range"
+                          min={min}
+                          max={max}
+                          step="1"
+                          value={photoCrop[edge]}
+                          disabled={photoPhase !== 'idle'}
+                          onChange={(event) =>
+                            handlePhotoCropChange(edge, event.target.value)
+                          }
+                        />
+                      </label>
+                    ))}
+
+                    <button
+                      type="button"
+                      className="photo-secondary-button"
+                      disabled={photoPhase !== 'idle'}
+                      onClick={handleResetPhotoCrop}
+                    >
+                      {texts.photoIdentification.resetFraming}
+                    </button>
+                  </div>
+                )}
+              </>
             )}
 
             <button
@@ -2471,6 +2982,12 @@ async function handleTransactionSubmit(event) {
             {photoStep === 'found' && photoResults.length > 0 && (
               <p role="status" className="photo-match-status">
                 {texts.photoIdentification.matchFound}
+              </p>
+            )}
+
+            {photoStep === 'review' && photoResults.length > 0 && (
+              <p role="status">
+                {texts.photoIdentification.reviewCandidates}
               </p>
             )}
 
@@ -2715,7 +3232,11 @@ async function handleTransactionSubmit(event) {
               </p>
             )}
 
-            {(photoError === 'noMatches' || photoError === 'insufficientData') && (
+            {(
+              photoError === 'noMatches' ||
+              photoError === 'insufficientData' ||
+              photoError === 'photoTooDistant'
+            ) && (
               <Link to="/catalog">{texts.photoIdentification.manualSearch}</Link>
             )}
           </section>
