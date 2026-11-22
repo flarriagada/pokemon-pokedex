@@ -1,7 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { getCollection, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard, getTransactions, createTransaction } from '../services/collectionService'
-import { getCardById, getSets, getSetById } from '../services/cardService'
+import {
+  getAlternateCardImage,
+  getCardById,
+  getCardImageUrls,
+  getSets,
+  getSetById
+} from '../services/cardService'
 import PokemonCard from '../components/PokemonCard'
 import '../components/Catalog.css'
 
@@ -62,6 +68,7 @@ function Collection({ texts, language }) {
   const [transactionsLoading, setTransactionsLoading] = useState(true)
   const [transactionsError, setTransactionsError] = useState(false)
   const [transactionCardDetails, setTransactionCardDetails] = useState({})
+  const [transactionImageStates, setTransactionImageStates] = useState({})
   const [transactionCardId, setTransactionCardId] = useState('')
   const [transactionType, setTransactionType] = useState('purchase')
   const [transactionQuantity, setTransactionQuantity] = useState('1')
@@ -71,6 +78,11 @@ function Collection({ texts, language }) {
   const [transactionSaving, setTransactionSaving] = useState(false)
   const [transactionMessage, setTransactionMessage] = useState('')
   const [transactionFilter, setTransactionFilter] = useState('all')
+  const imageLanguage = useRef(language)
+
+  useEffect(() => {
+    imageLanguage.current = language
+  }, [language])
 
 
   useEffect(() => {
@@ -273,6 +285,153 @@ function Collection({ texts, language }) {
       cancelled = true
     }
   }, [transactions, language])
+
+  useEffect(() => {
+    if (transactions.length === 0) return
+
+    let cancelled = false
+    const cardIds = [
+      ...new Set(transactions.map((transaction) => transaction.cardId))
+    ]
+    const detailsReady = cardIds.every((cardId) =>
+      Object.prototype.hasOwnProperty.call(transactionCardDetails, cardId) ||
+      cards.some((card) => card.cardId === cardId && card.details)
+    )
+
+    if (!detailsReady) return
+
+    const cardsById = Object.fromEntries(
+      cardIds.map((cardId) => {
+        const collectionCard = cards.find((card) => card.cardId === cardId)
+        const details = transactionCardDetails[cardId] ?? collectionCard?.details
+
+        return [cardId, details]
+      })
+    )
+    cardIds
+      .filter((cardId) =>
+        getCardImageUrls(cardsById[cardId]?.image).length === 0
+      )
+      .forEach(async (cardId) => {
+        try {
+          const alternateImage = await getAlternateCardImage(cardId, language)
+
+          if (cancelled) return
+
+          const urls = getCardImageUrls(alternateImage)
+          setTransactionImageStates((current) => ({
+            ...current,
+            [cardId]: {
+              language,
+              urls,
+              index: 0,
+              source: 'alternate',
+              unavailable: urls.length === 0
+            }
+          }))
+        } catch {
+          if (cancelled) return
+
+          setTransactionImageStates((current) => ({
+            ...current,
+            [cardId]: {
+              language,
+              urls: [],
+              index: 0,
+              source: 'alternate',
+              unavailable: true
+            }
+          }))
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [cards, language, transactionCardDetails, transactions])
+
+  async function handleTransactionImageError(cardId, image) {
+    const fallbackState = {
+      language,
+      urls: getCardImageUrls(image),
+      index: 0,
+      source: 'original',
+      unavailable: false
+    }
+    const savedState = transactionImageStates[cardId]
+    const currentState = savedState?.language === language
+      ? savedState
+      : fallbackState
+    const nextIndex = currentState.index + 1
+
+    if (nextIndex < currentState.urls.length) {
+      setTransactionImageStates((current) => ({
+        ...current,
+        [cardId]: {
+          ...currentState,
+          index: nextIndex
+        }
+      }))
+      return
+    }
+
+    if (currentState.source !== 'original') {
+      setTransactionImageStates((current) => ({
+        ...current,
+        [cardId]: {
+          ...currentState,
+          unavailable: true
+        }
+      }))
+      return
+    }
+
+    const requestLanguage = language
+    setTransactionImageStates((current) => ({
+      ...current,
+      [cardId]: {
+        language: requestLanguage,
+        urls: [],
+        index: 0,
+        source: 'alternate-loading',
+        unavailable: false
+      }
+    }))
+
+    try {
+      const alternateImage = await getAlternateCardImage(
+        cardId,
+        requestLanguage
+      )
+
+      if (imageLanguage.current !== requestLanguage) return
+
+      const urls = getCardImageUrls(alternateImage)
+      setTransactionImageStates((current) => ({
+        ...current,
+        [cardId]: {
+          language: requestLanguage,
+          urls,
+          index: 0,
+          source: 'alternate',
+          unavailable: urls.length === 0
+        }
+      }))
+    } catch {
+      if (imageLanguage.current !== requestLanguage) return
+
+      setTransactionImageStates((current) => ({
+        ...current,
+        [cardId]: {
+          language: requestLanguage,
+          urls: [],
+          index: 0,
+          source: 'alternate',
+          unavailable: true
+        }
+      }))
+    }
+  }
 
 async function handleQuantityChange(item, newQuantity) {
   if (busyId !== null || busyTradeId !== null || newQuantity < 1) return
@@ -576,7 +735,11 @@ async function handleTransactionSubmit(event) {
                 key={item.id}
                 className={`collection-item${item.forTrade ? ' collection-item--for-trade' : ''}`}
               >
-                <PokemonCard card={details} texts={texts} />
+                <PokemonCard
+                  card={details}
+                  texts={texts}
+                  language={language}
+                />
 
                 <div className="trade-control">
                   <label>
@@ -590,18 +753,6 @@ async function handleTransactionSubmit(event) {
                     />
                     <span>{texts.collection.tradeAvailable}</span>
                   </label>
-
-                  <span
-                    className="trade-status"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    {busyTradeId === item.id
-                      ? texts.collection.saving
-                      : item.forTrade
-                        ? texts.collection.tradeAvailable
-                        : texts.collection.tradeUnavailable}
-                  </span>
                 </div>
 
                 <div className="quantity-controls">
@@ -803,6 +954,7 @@ async function handleTransactionSubmit(event) {
                               onAdd={isOwned ? undefined : handleAddMissingCard}
                               adding={addingMissingCardId === card.id}
                               texts={texts}
+                              language={language}
                             />
                           </div>
                         )
@@ -1012,9 +1164,14 @@ async function handleTransactionSubmit(event) {
                         const details = transactionCardDetails[transaction.cardId] ??
                           collectionCard?.details
                         const cardName = details?.name || transaction.cardId
-                        const imageUrl = details?.image
-                          ? `${details.image}/low.webp`
+                        const savedImageState =
+                          transactionImageStates[transaction.cardId]
+                        const imageState = savedImageState?.language === language
+                          ? savedImageState
                           : null
+                        const imageUrl = imageState
+                          ? imageState.urls[imageState.index] ?? null
+                          : getCardImageUrls(details?.image)[0] ?? null
                         const totalPrice = transaction.totalPrice ??
                           transaction.quantity * transaction.unitPrice
 
@@ -1023,18 +1180,22 @@ async function handleTransactionSubmit(event) {
                             key={transaction.id}
                             className={`transaction-item transaction-item--${transaction.transactionType}`}
                           >
-                            {imageUrl && (
+                            {imageUrl && !imageState?.unavailable ? (
                               <img
                                 src={imageUrl}
                                 alt={texts.transactions.cardImageAlt(cardName)}
                                 loading="lazy"
-                                onLoad={(event) => {
-                                  event.currentTarget.hidden = false
-                                }}
-                                onError={(event) => {
-                                  event.currentTarget.hidden = true
-                                }}
+                                onError={() =>
+                                  handleTransactionImageError(
+                                    transaction.cardId,
+                                    details?.image
+                                  )
+                                }
                               />
+                            ) : (
+                              <div className="transaction-image-placeholder">
+                                {texts.card.noImage}
+                              </div>
                             )}
 
                             <div className="transaction-item-content">

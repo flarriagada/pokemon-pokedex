@@ -1,4 +1,49 @@
 
+const alternateImageCache = new Map()
+
+export function getCardImageUrls(image) {
+  if (typeof image !== 'string' || !image.trim()) return []
+
+  const baseUrl = image.trim().replace(/\/+$/, '')
+
+  return [
+    `${baseUrl}/low.webp`,
+    `${baseUrl}/low.png`
+  ]
+}
+
+export async function getAlternateCardImage(cardId, language = 'es') {
+  if (typeof cardId !== 'string' || !cardId.trim()) return null
+
+  const currentLanguage = language === 'en' ? 'en' : 'es'
+  const alternateLanguage = currentLanguage === 'es' ? 'en' : 'es'
+  const cacheKey = `${alternateLanguage}:${cardId}`
+
+  if (alternateImageCache.has(cacheKey)) {
+    return alternateImageCache.get(cacheKey)
+  }
+
+  // Compartimos la promesa para evitar consultas duplicadas simultáneas.
+  const request = getCardById(cardId, alternateLanguage)
+    .then((card) =>
+      typeof card?.image === 'string' && card.image.trim()
+        ? card.image.trim()
+        : null
+    )
+
+  alternateImageCache.set(cacheKey, request)
+
+  try {
+    return await request
+  } catch (error) {
+    // Los fallos temporales podrán reintentarse en una carga posterior.
+    if (alternateImageCache.get(cacheKey) === request) {
+      alternateImageCache.delete(cacheKey)
+    }
+    throw error
+  }
+}
+
 export async function getCards(search = '', page = 1, language = 'es') {
   const params = new URLSearchParams()
 

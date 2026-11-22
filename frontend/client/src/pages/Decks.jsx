@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { getDecks, createDeck, getDeckCards, addCardToDeck,
          updateDeckCardQuantity, removeCardFromDeck, updateDeck, deleteDeck} from '../services/deckService'
 import { getCollection } from '../services/collectionService'
-import { getCardById } from '../services/cardService'
+import {
+  getAlternateCardImage,
+  getCardById,
+  getCardImageUrls
+} from '../services/cardService'
 import './Decks.css'
 
 async function getLocalizedCollectionCards(language) {
@@ -44,6 +48,7 @@ function Decks({ texts, language }) {
   const [activeDeckId, setActiveDeckId] = useState(null)
   // Cartas disponibles en nuestra colección
   const [collectionCards, setCollectionCards] = useState([])
+  const [deckCardImages, setDeckCardImages] = useState({})
   // Cartas que ya están asociadas al mazo
   const [deckCards, setDeckCards] = useState([])
   // Carta seleccionada en el formulario
@@ -62,8 +67,11 @@ function Decks({ texts, language }) {
   const [busyDeckId, setBusyDeckId] = useState(null) // Evita editar o eliminar varias veces mientras guardamos
   const [deckActionError, setDeckActionError] = useState(null) //errores
   const loadedDeckId = useRef(null)
+  const imageLanguage = useRef(language)
 
-
+  useEffect(() => {
+    imageLanguage.current = language
+  }, [language])
 
 
   // Recuperamos los mazos cuando abrimos la página.
@@ -147,6 +155,139 @@ function Decks({ texts, language }) {
       cancelled = true
     }
   }, [activeDeckId, language])
+
+  useEffect(() => {
+    let cancelled = false
+    const visibleCards = deckCards
+      .map((item) =>
+        collectionCards.find((card) => card.id === item.userCardId)
+      )
+      .filter(Boolean)
+    visibleCards
+      .filter((card) => getCardImageUrls(card.image).length === 0)
+      .forEach(async (card) => {
+        try {
+          const alternateImage = await getAlternateCardImage(
+            card.cardId,
+            language
+          )
+
+          if (cancelled) return
+
+          const urls = getCardImageUrls(alternateImage)
+          setDeckCardImages((current) => ({
+            ...current,
+            [card.cardId]: {
+              language,
+              urls,
+              index: 0,
+              source: 'alternate',
+              unavailable: urls.length === 0
+            }
+          }))
+        } catch {
+          if (cancelled) return
+
+          setDeckCardImages((current) => ({
+            ...current,
+            [card.cardId]: {
+              language,
+              urls: [],
+              index: 0,
+              source: 'alternate',
+              unavailable: true
+            }
+          }))
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [collectionCards, deckCards, language])
+
+  async function handleDeckImageError(card) {
+    const fallbackState = {
+      language,
+      urls: getCardImageUrls(card.image),
+      index: 0,
+      source: 'original',
+      unavailable: false
+    }
+    const savedState = deckCardImages[card.cardId]
+    const currentState = savedState?.language === language
+      ? savedState
+      : fallbackState
+    const nextIndex = currentState.index + 1
+
+    if (nextIndex < currentState.urls.length) {
+      setDeckCardImages((current) => ({
+        ...current,
+        [card.cardId]: {
+          ...currentState,
+          index: nextIndex
+        }
+      }))
+      return
+    }
+
+    if (currentState.source !== 'original') {
+      setDeckCardImages((current) => ({
+        ...current,
+        [card.cardId]: {
+          ...currentState,
+          unavailable: true
+        }
+      }))
+      return
+    }
+
+    const requestLanguage = language
+    setDeckCardImages((current) => ({
+      ...current,
+      [card.cardId]: {
+        language: requestLanguage,
+        urls: [],
+        index: 0,
+        source: 'alternate-loading',
+        unavailable: false
+      }
+    }))
+
+    try {
+      const alternateImage = await getAlternateCardImage(
+        card.cardId,
+        requestLanguage
+      )
+
+      if (imageLanguage.current !== requestLanguage) return
+
+      const urls = getCardImageUrls(alternateImage)
+      setDeckCardImages((current) => ({
+        ...current,
+        [card.cardId]: {
+          language: requestLanguage,
+          urls,
+          index: 0,
+          source: 'alternate',
+          unavailable: urls.length === 0
+        }
+      }))
+    } catch {
+      if (imageLanguage.current !== requestLanguage) return
+
+      setDeckCardImages((current) => ({
+        ...current,
+        [card.cardId]: {
+          language: requestLanguage,
+          urls: [],
+          index: 0,
+          source: 'alternate',
+          unavailable: true
+        }
+      }))
+    }
+  }
 
   // Se ejecuta cuando enviamos el formulario.
   async function handleCreateDeck(event) {
@@ -668,17 +809,26 @@ async function handleDeleteDeck(deck) {
                               const card = collectionCards.find(
                                 (saved) => saved.id === item.userCardId
                               )
+                              const imageState = card
+                                ? deckCardImages[card.cardId]?.language === language
+                                  ? deckCardImages[card.cardId]
+                                  : null
+                                : null
+                              const imageUrl = imageState
+                                ? imageState.urls[imageState.index] ?? null
+                                : getCardImageUrls(card?.image)[0] ?? null
 
                               return (
                                 <div className="deck-card-row" key={item.userCardId}>
 
                                   {/* Imagen obtenida desde TCGdex. */}
-                                  {card?.image ? (
+                                  {imageUrl && !imageState?.unavailable ? (
                                     <img
-                                      src={`${card.image}/low.webp`}
+                                      src={imageUrl}
                                       alt={texts.decks.cardImageAlt(card.displayName)}
                                       className="deck-card-image"
                                       loading="lazy"
+                                      onError={() => handleDeckImageError(card)}
                                     />
                                   ) : (
                                     <div className="deck-card-image-placeholder">

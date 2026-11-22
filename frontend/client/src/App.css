@@ -369,8 +369,6 @@
 
 .trade-control {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
   margin-top: 15px;
   padding: 10px;
   border-radius: 8px;
@@ -394,16 +392,6 @@
 
 .trade-control input:disabled {
   cursor: wait;
-}
-
-.trade-status {
-  color: #666;
-  font-size: 13px;
-}
-
-.collection-item--for-trade .trade-status {
-  color: #1b5e20;
-  font-weight: bold;
 }
 
 .set-completion {
@@ -656,10 +644,24 @@
   border-left-color: #d97706;
 }
 
-.transaction-item img {
+.transaction-item img,
+.transaction-image-placeholder {
   width: 90px;
   height: 124px;
   object-fit: contain;
+}
+
+.transaction-image-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 6px;
+  border-radius: 6px;
+  background-color: #f0f0f0;
+  color: #666;
+  font-size: 12px;
+  text-align: center;
 }
 
 .transaction-item-content {
@@ -782,7 +784,8 @@
     padding: 10px;
   }
 
-  .transaction-item img {
+  .transaction-item img,
+  .transaction-image-placeholder {
     width: 64px;
     height: 88px;
   }

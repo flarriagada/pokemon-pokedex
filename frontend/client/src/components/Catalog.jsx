@@ -158,6 +158,7 @@ async function handleAddToCollection(card) {
                   onAdd={handleAddToCollection}
                   adding={addingCardId === card.id}
                   texts={texts}
+                  language={language}
                 />
               ))}
             </div>
