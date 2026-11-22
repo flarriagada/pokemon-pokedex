@@ -5,7 +5,7 @@
     auto-fill,
     minmax(170px, 1fr)
   );
-  gap: 20px;
+  gap: 8px;
   margin-top: 25px;
 }
 
@@ -78,51 +78,66 @@
 }
 
 .pokemon-card-pricing {
+  min-width: 0;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #ddd;
+  overflow-wrap: anywhere;
 }
 
-.pokemon-card-pricing h4,
-.pricing-source h5 {
+.pokemon-card-pricing[hidden] {
+  display: none;
+}
+
+.market-price-toggle {
+  width: 100%;
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid #a51c2a;
+  border-radius: 8px;
+  background-color: white;
+  color: #a51c2a;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.market-price-toggle:hover,
+.market-price-toggle[aria-expanded='true'] {
+  background-color: #a51c2a;
+  color: white;
+}
+
+.pokemon-card-pricing h4 {
   margin: 0 0 8px;
 }
 
-.pricing-source + .pricing-source {
-  margin-top: 14px;
-}
-
-.pricing-source dl {
-  margin: 0;
-}
-
-.pricing-source dl div {
-  display: grid;
-  gap: 3px;
-  margin-bottom: 8px;
-}
-
-.pricing-source dt {
-  color: #555;
-  font-size: 13px;
-}
-
-.pricing-source dd {
+.market-price-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
   margin: 0;
   color: #222;
-  font-weight: bold;
+}
+
+.market-price-amount {
+  font-size: 1.45rem;
+  line-height: 1.2;
+}
+
+.market-price-unavailable {
+  margin: 0;
 }
 
 .pricing-updated,
-.pricing-notice {
+.pricing-source-note {
   margin: 8px 0 0;
   font-size: 12px !important;
 }
 
-.pricing-notice {
-  padding-top: 10px;
-  border-top: 1px solid #ddd;
-  font-style: italic;
+.pricing-source-note {
+  color: #555;
 }
 
 
@@ -136,12 +151,27 @@
 }
 
 .pagination button {
-  padding: 10px 20px;
+  padding: 10px 14px;
   border: none;
   border-radius: 8px;
   background-color: #e63946;
   color: white;
   cursor: pointer;
+}
+
+.pagination button.is-active {
+  background-color: #a51c2a;
+  box-shadow: 0 0 0 2px rgba(165, 28, 42, 0.2);
+}
+
+.pagination-page-number {
+  min-width: 42px;
+}
+
+.pagination-ellipsis {
+  padding: 0 4px;
+  color: #666;
+  font-weight: bold;
 }
 
 .pagination button:disabled {
@@ -175,4 +205,23 @@
 .add-card-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+@media (max-width: 600px) {
+  .pagination {
+    gap: 6px;
+  }
+
+  .pagination button {
+    padding: 8px 10px;
+    font-size: 13px;
+  }
+
+  .pagination-page-number {
+    min-width: 36px;
+  }
+
+  .pagination-page--mobile-hidden {
+    display: none;
+  }
 }

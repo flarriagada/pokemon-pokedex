@@ -6,6 +6,10 @@ export function getCardImageUrls(image) {
 
   const baseUrl = image.trim().replace(/\/+$/, '')
 
+  if (/\.(?:avif|webp|png|jpe?g)(?:\?.*)?$/i.test(baseUrl)) {
+    return [baseUrl]
+  }
+
   return [
     `${baseUrl}/low.webp`,
     `${baseUrl}/low.png`
@@ -16,20 +20,24 @@ export async function getAlternateCardImage(cardId, language = 'es') {
   if (typeof cardId !== 'string' || !cardId.trim()) return null
 
   const currentLanguage = language === 'en' ? 'en' : 'es'
-  const alternateLanguage = currentLanguage === 'es' ? 'en' : 'es'
-  const cacheKey = `${alternateLanguage}:${cardId}`
+  const cacheKey = `${currentLanguage}:${cardId}`
 
   if (alternateImageCache.has(cacheKey)) {
     return alternateImageCache.get(cacheKey)
   }
 
   // Compartimos la promesa para evitar consultas duplicadas simultáneas.
-  const request = getCardById(cardId, alternateLanguage)
-    .then((card) =>
-      typeof card?.image === 'string' && card.image.trim()
-        ? card.image.trim()
-        : null
-    )
+  const request = fetch(
+    `/api/cards/${encodeURIComponent(cardId)}/fallback-image?lang=${currentLanguage}`
+  ).then(async (response) => {
+    if (response.status === 404) return null
+    if (!response.ok) throw new Error('No se pudo obtener la imagen de respaldo')
+
+    const result = await response.json()
+    return typeof result.image === 'string' && result.image.trim()
+      ? result.image.trim()
+      : null
+  })
 
   alternateImageCache.set(cacheKey, request)
 
@@ -44,13 +52,29 @@ export async function getAlternateCardImage(cardId, language = 'es') {
   }
 }
 
-export async function getCards(search = '', page = 1, language = 'es') {
+export async function getCards(
+  search = '',
+  page = 1,
+  language = 'es',
+  localId = '',
+  exactLocalId = false,
+  hp = ''
+) {
   const params = new URLSearchParams()
 
   params.set('page', String(page))
   params.set('lang', language === 'en' ? 'en' : 'es')
   if (search.trim()) {
     params.set('search', search.trim())
+  }
+  if (localId.trim()) {
+    params.set('localId', localId.trim())
+    if (exactLocalId) {
+      params.set('exactLocalId', 'true')
+    }
+  }
+  if (hp.trim()) {
+    params.set('hp', hp.trim())
   }
 
   const response = await fetch(`/api/cards?${params.toString()}`)
@@ -60,6 +84,29 @@ export async function getCards(search = '', page = 1, language = 'es') {
   }
 
   return response.json()
+}
+
+export async function getLastCardPage(search = '', language = 'es') {
+  const params = new URLSearchParams()
+
+  params.set('lang', language === 'en' ? 'en' : 'es')
+  if (search.trim()) {
+    params.set('search', search.trim())
+  }
+
+  const response = await fetch(
+    `/api/cards/last-page?${params.toString()}`
+  )
+
+  if (!response.ok) {
+    throw new Error('No se pudo obtener la última página')
+  }
+
+  const result = await response.json()
+
+  return Number.isInteger(result.lastPage) && result.lastPage >= 0
+    ? result.lastPage
+    : 0
 }
 
 export async function getCardById(cardId, language = 'es') {
@@ -82,10 +129,13 @@ export async function getCardById(cardId, language = 'es') {
   return response.json()
 }
 
-export async function getSets(language = 'es') {
+export async function getSets(language = 'es', search = '') {
   const params = new URLSearchParams()
 
   params.set('lang', language === 'en' ? 'en' : 'es')
+  if (search.trim()) {
+    params.set('search', search.trim())
+  }
 
   const response = await fetch(`/api/sets?${params.toString()}`)
 

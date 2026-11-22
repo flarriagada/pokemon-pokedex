@@ -1,8 +1,8 @@
 
 {
   "tasks": {
-    "dev": "APP_ENV=development deno run --watch --env-file=.env --allow-env=APP_ENV,GOOGLE_CLIENT_ID --allow-net=127.0.0.1:8000,api.tcgdex.net,www.googleapis.com --allow-read=./data --allow-write=./data server.ts",
-    "start": "deno run --env-file=.env --allow-env=APP_ENV,GOOGLE_CLIENT_ID --allow-net=127.0.0.1:8000,api.tcgdex.net,www.googleapis.com --allow-read=./data --allow-write=./data server.ts",
+    "dev": "APP_ENV=development deno run --watch --env-file=.env --allow-env=APP_ENV,GOOGLE_CLIENT_ID --allow-net=127.0.0.1:8000,api.tcgdex.net,assets.tcgdex.net,pokemon.cardcorpus.com,img.cardcorpus.com,www.googleapis.com --allow-read=./data --allow-write=./data server.ts",
+    "start": "deno run --env-file=.env --allow-env=APP_ENV,GOOGLE_CLIENT_ID --allow-net=127.0.0.1:8000,api.tcgdex.net,assets.tcgdex.net,pokemon.cardcorpus.com,img.cardcorpus.com,www.googleapis.com --allow-read=./data --allow-write=./data server.ts",
     "check": "deno check server.ts",
     "lint": "deno lint"
   },

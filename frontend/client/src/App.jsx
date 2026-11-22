@@ -44,6 +44,17 @@ const texts = translations[language]
           />
 
           <Route
+            path="/history"
+            element={
+              <Collection
+                texts={texts}
+                language={language}
+                view="history"
+              />
+            }
+          />
+
+          <Route
             path="*"
             element={
               <section>

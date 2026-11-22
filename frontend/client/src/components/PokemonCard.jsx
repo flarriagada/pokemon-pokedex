@@ -6,21 +6,21 @@ function isRecord(value) {
 }
 
 function isValidPrice(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
-function formatMarketPrice(value, currency, locale) {
+function formatMarketPrice(value, locale) {
   if (!isValidPrice(value)) return null
 
   try {
     return new Intl.NumberFormat(locale, {
       style: 'currency',
-      currency,
+      currency: 'USD',
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
     }).format(value)
   } catch {
-    return `${value.toFixed(2)} ${currency}`
+    return `US$${value.toFixed(2)}`
   }
 }
 
@@ -32,8 +32,27 @@ function formatPricingDate(value, locale) {
   if (Number.isNaN(date.getTime())) return null
 
   return new Intl.DateTimeFormat(locale, {
-    dateStyle: 'medium'
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'UTC'
   }).format(date)
+}
+
+function selectTcgplayerMarketPrice(tcgplayer) {
+  if (!isRecord(tcgplayer)) return null
+
+  const variants = Object.entries(tcgplayer)
+    .filter(([, value]) =>
+      isRecord(value) && isValidPrice(value.marketPrice)
+    )
+    .map(([variant, value]) => ({
+      variant,
+      value: value.marketPrice
+    }))
+  const normalPrice = variants.find((item) => item.variant === 'normal')
+
+  return normalPrice ?? variants[0] ?? null
 }
 
 function createImageState(image, source = 'original', key = '') {
@@ -51,6 +70,7 @@ function createImageState(image, source = 'original', key = '') {
 
 function PokemonCard({ card, onAdd, adding = false, texts, language = 'es' }) {
   const [showDetails, setShowDetails] = useState(false)
+  const [showMarketPrice, setShowMarketPrice] = useState(false)
   const imageKey = `${language}:${card.id}:${card.image ?? ''}`
   const [imageState, setImageState] = useState(() =>
     createImageState(card.image, 'original', imageKey)
@@ -164,68 +184,17 @@ function PokemonCard({ card, onAdd, adding = false, texts, language = 'es' }) {
   const tcgplayer = isRecord(pricing.tcgplayer)
     ? pricing.tcgplayer
     : null
-  const cardmarket = isRecord(pricing.cardmarket)
-    ? pricing.cardmarket
-    : null
   const tcgplayerCurrency = typeof tcgplayer?.unit === 'string'
-    ? tcgplayer.unit
-    : texts.card.tcgplayerCurrency
-  const cardmarketCurrency = typeof cardmarket?.unit === 'string'
-    ? cardmarket.unit
-    : texts.card.cardmarketCurrency
-  const tcgplayerPrices = tcgplayer
-    ? Object.entries(tcgplayer)
-        .filter(([, value]) =>
-          isRecord(value) && isValidPrice(value.marketPrice)
-        )
-        .map(([variant, value]) => ({
-          variant,
-          price: formatMarketPrice(
-            value.marketPrice,
-            tcgplayerCurrency,
-            texts.card.locale
-          )
-        }))
-    : []
-  const cardmarketPrices = cardmarket
-    ? [
-        {
-          key: 'trend',
-          label: texts.card.trendPrice,
-          value: cardmarket.trend
-        },
-        {
-          key: 'avg',
-          label: texts.card.averagePrice,
-          value: cardmarket.avg
-        },
-        {
-          key: 'trend-holo',
-          label: `${texts.card.holoVariant} — ${texts.card.trendPrice}`,
-          value: cardmarket['trend-holo']
-        },
-        {
-          key: 'avg-holo',
-          label: `${texts.card.holoVariant} — ${texts.card.averagePrice}`,
-          value: cardmarket['avg-holo']
-        }
-      ]
-        .filter((item) => isValidPrice(item.value))
-        .map((item) => ({
-          ...item,
-          price: formatMarketPrice(
-            item.value,
-            cardmarketCurrency,
-            texts.card.locale
-          )
-        }))
-    : []
+    ? tcgplayer.unit.trim().toUpperCase()
+    : 'USD'
+  const selectedMarketPrice = tcgplayerCurrency === 'USD'
+    ? selectTcgplayerMarketPrice(tcgplayer)
+    : null
+  const formattedMarketPrice = selectedMarketPrice
+    ? formatMarketPrice(selectedMarketPrice.value, texts.card.locale)
+    : null
   const tcgplayerUpdated = formatPricingDate(
     tcgplayer?.updated,
-    texts.card.locale
-  )
-  const cardmarketUpdated = formatPricingDate(
-    cardmarket?.updated,
     texts.card.locale
   )
 
@@ -276,54 +245,46 @@ function PokemonCard({ card, onAdd, adding = false, texts, language = 'es' }) {
           </p>
         </div>
 
-        <div className="pokemon-card-pricing">
+        <button
+          type="button"
+          className="market-price-toggle"
+          aria-expanded={showMarketPrice}
+          aria-controls={`${detailsId}-market-price`}
+          onClick={() => setShowMarketPrice((current) => !current)}
+        >
+          {showMarketPrice
+            ? texts.card.hideMarketPrice
+            : texts.card.consultMarketPrice}
+        </button>
+
+        <div
+          id={`${detailsId}-market-price`}
+          className="pokemon-card-pricing"
+          hidden={!showMarketPrice}
+        >
           <h4>{texts.card.marketPrices}</h4>
 
-          <section className="pricing-source">
-            <h5>TCGplayer — {tcgplayerCurrency}</h5>
-            {tcgplayerPrices.length === 0 ? (
-              <p>{texts.card.priceUnavailable}</p>
-            ) : (
-              <dl>
-                {tcgplayerPrices.map((item) => (
-                  <div key={item.variant}>
-                    <dt>
-                      {texts.card.priceVariant(item.variant)} — {texts.card.marketPrice}
-                    </dt>
-                    <dd>{item.price}</dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-            {tcgplayerUpdated && (
-              <p className="pricing-updated">
-                {texts.card.lastUpdated}: {tcgplayerUpdated}
-              </p>
-            )}
-          </section>
+          {formattedMarketPrice ? (
+            <p className="market-price-line">
+              <strong className="market-price-amount">
+                {formattedMarketPrice}
+              </strong>
+              <span aria-hidden="true">·</span>
+              <span>{texts.card.priceVariant(selectedMarketPrice.variant)}</span>
+            </p>
+          ) : (
+            <p className="market-price-unavailable">
+              {texts.card.priceUnavailable}
+            </p>
+          )}
 
-          <section className="pricing-source">
-            <h5>Cardmarket — {cardmarketCurrency}</h5>
-            {cardmarketPrices.length === 0 ? (
-              <p>{texts.card.priceUnavailable}</p>
-            ) : (
-              <dl>
-                {cardmarketPrices.map((item) => (
-                  <div key={item.key}>
-                    <dt>{item.label}</dt>
-                    <dd>{item.price}</dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-            {cardmarketUpdated && (
-              <p className="pricing-updated">
-                {texts.card.lastUpdated}: {cardmarketUpdated}
-              </p>
-            )}
-          </section>
+          {tcgplayerUpdated && (
+            <p className="pricing-updated">
+              {texts.card.lastUpdated}: {tcgplayerUpdated}
+            </p>
+          )}
 
-          <p className="pricing-notice">{texts.card.indicativePrices}</p>
+          <p className="pricing-source-note">{texts.card.priceSource}</p>
         </div>
       </div>
 

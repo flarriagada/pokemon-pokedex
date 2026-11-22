@@ -1,6 +1,8 @@
 import {
   getCardsFromTcgdex,
-  getCardFromTcgdex,
+  getLastCardsPageFromTcgdex,
+  getComplementedCardFromProviders,
+  getFallbackCardImage,
   getSetsFromTcgdex,
   getSetFromTcgdex
 } from './services/tcgdexService.ts'
@@ -64,6 +66,10 @@ if (authResponse) {
       url.pathname === '/api/cards'
     ) {
       const search = url.searchParams.get('search') ?? ''
+      const localId = url.searchParams.get('localId') ?? ''
+      const hp = url.searchParams.get('hp') ?? ''
+      const exactLocalIdValue = url.searchParams.get('exactLocalId') ?? ''
+      const exactLocalId = exactLocalIdValue === 'true'
       const page = Number(url.searchParams.get('page') ?? '1')
       const language = getLanguage(url)
 
@@ -81,12 +87,121 @@ if (authResponse) {
         )
       }
 
+      if (
+        search.length > 100 ||
+        localId.length > 30 ||
+        (hp && (!/^\d{2,3}$/.test(hp) || Number(hp) > 999)) ||
+        !['', 'true', 'false'].includes(exactLocalIdValue) ||
+        (localId && !/^[a-zA-Z0-9._-]+$/.test(localId))
+      ) {
+        return Response.json(
+          { error: 'Filtros de cartas inválidos' },
+          { status: 400 }
+        )
+      }
+
       try {
-        const cards = await getCardsFromTcgdex(search, page, language)
+        const cards = await getCardsFromTcgdex(
+          search,
+          page,
+          language,
+          localId,
+          exactLocalId,
+          hp
+        )
         return Response.json(cards)
       } catch {
         return Response.json(
           { error: 'No se pudieron obtener las cartas' },
+          { status: 502 }
+        )
+      }
+    }
+
+    if (
+      request.method === 'GET' &&
+      url.pathname === '/api/cards/last-page'
+    ) {
+      const search = url.searchParams.get('search') ?? ''
+      const localId = url.searchParams.get('localId') ?? ''
+      const language = getLanguage(url)
+
+      if (!language) {
+        return Response.json(
+          { error: 'Idioma inválido' },
+          { status: 400 }
+        )
+      }
+
+      if (
+        search.length > 100 ||
+        localId.length > 30 ||
+        (localId && !/^[a-zA-Z0-9._-]+$/.test(localId))
+      ) {
+        return Response.json(
+          { error: 'Filtros de cartas inválidos' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        const lastPage = await getLastCardsPageFromTcgdex(
+          search,
+          language,
+          localId
+        )
+        return Response.json({ lastPage })
+      } catch {
+        return Response.json(
+          { error: 'No se pudo determinar la última página' },
+          { status: 502 }
+        )
+      }
+    }
+
+    const fallbackImageMatch = url.pathname.match(
+      /^\/api\/cards\/([^/]+)\/fallback-image$/
+    )
+
+    if (request.method === 'GET' && fallbackImageMatch) {
+      const language = getLanguage(url)
+      let cardId: string
+
+      if (!language) {
+        return Response.json(
+          { error: 'Idioma inválido' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        cardId = decodeURIComponent(fallbackImageMatch[1])
+      } catch {
+        return Response.json(
+          { error: 'Identificador de carta inválido' },
+          { status: 400 }
+        )
+      }
+
+      if (!/^[a-zA-Z0-9._-]{1,100}$/.test(cardId)) {
+        return Response.json(
+          { error: 'Identificador de carta inválido' },
+          { status: 400 }
+        )
+      }
+
+      try {
+        const fallback = await getFallbackCardImage(cardId, language)
+
+        return fallback
+          ? Response.json(fallback)
+          : Response.json(
+              { error: 'Imagen de respaldo no encontrada' },
+              { status: 404 }
+            )
+      } catch {
+        return Response.json(
+          { error: 'No se pudo obtener la imagen de respaldo' },
           { status: 502 }
         )
       }
@@ -124,7 +239,7 @@ if (authResponse) {
       }
 
       try {
-        const card = await getCardFromTcgdex(cardId, language)
+        const card = await getComplementedCardFromProviders(cardId, language)
 
         if (!card) {
           return Response.json(
@@ -147,6 +262,7 @@ if (authResponse) {
       url.pathname === '/api/sets'
     ) {
       const language = getLanguage(url)
+      const search = url.searchParams.get('search') ?? ''
 
       if (!language) {
         return Response.json(
@@ -155,8 +271,15 @@ if (authResponse) {
         )
       }
 
+      if (search.length > 100) {
+        return Response.json(
+          { error: 'Búsqueda de expansión inválida' },
+          { status: 400 }
+        )
+      }
+
       try {
-        const sets = await getSetsFromTcgdex(language)
+        const sets = await getSetsFromTcgdex(language, search)
         return Response.json(sets)
       } catch {
         return Response.json(

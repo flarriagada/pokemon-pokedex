@@ -12,6 +12,17 @@
   overflow-wrap: anywhere;
 }
 
+.user-menu .google-login {
+  margin: 0;
+  padding: 14px 10px;
+  box-shadow: none;
+}
+
+.user-menu .google-login p {
+  color: #222;
+  text-align: center;
+}
+
 .site-header .google-login p {
   margin: 0;
   line-height: 1.5;
