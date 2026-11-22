@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { getCollection, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard, getTransactions, createTransaction } from '../services/collectionService'
+import { getCollection, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard, getTransactions, createTransaction, getTags, createTag, deleteTag, assignTagToCard, removeTagFromCard } from '../services/collectionService'
 import {
   getAlternateCardImage,
   getCards,
   getCardById,
   getCardImageUrls,
+  getLastCardPage,
   getSets,
   getSetById
 } from '../services/cardService'
@@ -18,6 +19,9 @@ const PHOTO_MAX_PIXELS = 20_000_000
 const PHOTO_MIN_CARD_WIDTH = 150
 const PHOTO_MIN_CARD_HEIGHT = 205
 const VISUAL_MATCH_CONCURRENCY = 4
+const ALL_MISSING_PAGE_SIZE = 18
+const ALL_MISSING_MAX_SCAN_ROUNDS = 10
+const TAG_EMOJIS = ['❤️', '⭐', '💰', '🃏', '🔥', '⚡', '💧', '🌿', '💎', '🏆']
 const PHOTO_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -873,6 +877,94 @@ async function mapWithConcurrency(items, limit, mapper) {
   return results
 }
 
+async function scanMissingCatalogPage({
+  search,
+  preferredLanguage,
+  cursors,
+  exhausted,
+  ownedIds,
+  seenIds,
+  pendingCards = []
+}) {
+  const nextCursors = { ...cursors }
+  const nextExhausted = { ...exhausted }
+  const cards = pendingCards.filter((card) => !ownedIds.has(card.id))
+  const queuedIds = new Set([
+    ...seenIds,
+    ...cards.map((card) => card.id)
+  ])
+  const languages = preferredLanguage === 'en'
+    ? ['en', 'es']
+    : ['es', 'en']
+
+  for (
+    let round = 0;
+    round < ALL_MISSING_MAX_SCAN_ROUNDS &&
+      cards.length < ALL_MISSING_PAGE_SIZE &&
+      languages.some((language) => !nextExhausted[language]);
+    round += 1
+  ) {
+    const activeLanguages = languages.filter(
+      (language) => !nextExhausted[language]
+    )
+    const settled = await Promise.allSettled(
+      activeLanguages.map((language) =>
+        getCards(search, nextCursors[language], language)
+      )
+    )
+    let successfulRequests = 0
+
+    settled.forEach((result, index) => {
+      if (result.status !== 'fulfilled') return
+
+      successfulRequests += 1
+      const language = activeLanguages[index]
+      const pageCards = Array.isArray(result.value) ? result.value : []
+      nextCursors[language] += 1
+
+      if (pageCards.length < 12) nextExhausted[language] = true
+
+      for (const card of pageCards) {
+        if (
+          typeof card?.id !== 'string' ||
+          ownedIds.has(card.id) ||
+          queuedIds.has(card.id)
+        ) {
+          continue
+        }
+
+        queuedIds.add(card.id)
+        cards.push({ ...card, sourceLanguage: language })
+      }
+    })
+
+    if (successfulRequests === 0) {
+      throw new Error('No se pudo consultar el catálogo')
+    }
+  }
+
+  const pageCards = cards.slice(0, ALL_MISSING_PAGE_SIZE)
+  const detailedCards = await mapWithConcurrency(
+    pageCards,
+    VISUAL_MATCH_CONCURRENCY,
+    async (card) => {
+      try {
+        const details = await getCardById(card.id, card.sourceLanguage)
+        return { ...card, ...details, sourceLanguage: card.sourceLanguage }
+      } catch {
+        return card
+      }
+    }
+  )
+
+  return {
+    cards: detailedCards,
+    pendingCards: cards.slice(ALL_MISSING_PAGE_SIZE),
+    cursors: nextCursors,
+    exhausted: nextExhausted
+  }
+}
+
 async function loadPhotoImage(file) {
   if (typeof createImageBitmap === 'function') {
     let bitmap
@@ -970,6 +1062,21 @@ function Collection({ texts, language, view = 'collection' }) {
   const [busyTradeId, setBusyTradeId] = useState(null)
   const [actionError, setActionError] = useState('')
   const [activeCollectionTab, setActiveCollectionTab] = useState('cards')
+  const [tags, setTags] = useState([])
+  const [cardTagIds, setCardTagIds] = useState({})
+  const [tagsLoading, setTagsLoading] = useState(true)
+  const [tagsError, setTagsError] = useState(false)
+  const [manageTagsOpen, setManageTagsOpen] = useState(false)
+  const [newTagName, setNewTagName] = useState('')
+  const [newTagEmoji, setNewTagEmoji] = useState('')
+  const [tagBusyKey, setTagBusyKey] = useState('')
+  const [tagMessage, setTagMessage] = useState('')
+  const [editingTagsCardId, setEditingTagsCardId] = useState(null)
+  const [collectionSearch, setCollectionSearch] = useState('')
+  const [collectionSort, setCollectionSort] = useState('name-asc')
+  const [collectionTagFilter, setCollectionTagFilter] = useState('all')
+  const [collectionRarityFilter, setCollectionRarityFilter] = useState('all')
+  const [collectionSetFilter, setCollectionSetFilter] = useState('all')
   const [addCardPanelOpen, setAddCardPanelOpen] = useState(false)
   const [addCardSearch, setAddCardSearch] = useState('')
   const [addCardResults, setAddCardResults] = useState([])
@@ -989,12 +1096,39 @@ function Collection({ texts, language, view = 'collection' }) {
   const [setFilter, setSetFilter] = useState('all')
   const [addingMissingCardId, setAddingMissingCardId] = useState(null)
   const [setFeedback, setSetFeedback] = useState(null)
+  const [missingMode, setMissingMode] = useState('all')
+  const [allMissingSearchInput, setAllMissingSearchInput] = useState('')
+  const [allMissingSearch, setAllMissingSearch] = useState('')
+  const [allMissingPages, setAllMissingPages] = useState([])
+  const [allMissingPending, setAllMissingPending] = useState([])
+  const [allMissingPageIndex, setAllMissingPageIndex] = useState(0)
+  const [allMissingCursors, setAllMissingCursors] = useState({ es: 1, en: 1 })
+  const [allMissingExhausted, setAllMissingExhausted] = useState({
+    es: false,
+    en: false
+  })
+  const [allMissingLoading, setAllMissingLoading] = useState(false)
+  const [allMissingError, setAllMissingError] = useState(false)
   const [transactions, setTransactions] = useState([])
   const [transactionsLoading, setTransactionsLoading] = useState(true)
   const [transactionsError, setTransactionsError] = useState(false)
+  const [transactionsPage, setTransactionsPage] = useState(1)
+  const [transactionsTotalPages, setTransactionsTotalPages] = useState(0)
+  const [transactionsTotal, setTransactionsTotal] = useState(0)
+  const [transactionsRefresh, setTransactionsRefresh] = useState(0)
   const [transactionCardDetails, setTransactionCardDetails] = useState({})
   const [transactionImageStates, setTransactionImageStates] = useState({})
   const [transactionCardId, setTransactionCardId] = useState('')
+  const [transactionSelectedCard, setTransactionSelectedCard] = useState(null)
+  const [transactionCardSearch, setTransactionCardSearch] = useState('')
+  const [transactionActiveSearch, setTransactionActiveSearch] = useState('')
+  const [transactionSearchResults, setTransactionSearchResults] = useState([])
+  const [transactionSearchPage, setTransactionSearchPage] = useState(1)
+  const [transactionSearchLastPage, setTransactionSearchLastPage] = useState(0)
+  const [transactionSearchRefresh, setTransactionSearchRefresh] = useState(0)
+  const [transactionSearching, setTransactionSearching] = useState(false)
+  const [transactionSearchError, setTransactionSearchError] = useState(false)
+  const [transactionHasSearched, setTransactionHasSearched] = useState(false)
   const [transactionType, setTransactionType] = useState('purchase')
   const [transactionQuantity, setTransactionQuantity] = useState('1')
   const [transactionUnitPrice, setTransactionUnitPrice] = useState('0')
@@ -1036,6 +1170,11 @@ function Collection({ texts, language, view = 'collection' }) {
   const photoPreviewUrlRef = useRef('')
   const photoPanelOpenRef = useRef(false)
   const automaticPhotoCrop = useRef(null)
+  const allMissingRunId = useRef(0)
+  const ownedIdsSignature = cards
+    .map((card) => card.cardId)
+    .sort()
+    .join('|')
 
   useEffect(() => {
     imageLanguage.current = language
@@ -1122,6 +1261,97 @@ function Collection({ texts, language, view = 'collection' }) {
   useEffect(() => {
     let cancelled = false
 
+    async function loadTags() {
+      setTagsLoading(true)
+      setTagsError(false)
+
+      try {
+        const result = await getTags()
+
+        if (cancelled) return
+
+        setTags(Array.isArray(result.tags) ? result.tags : [])
+        const assignments = Array.isArray(result.assignments)
+          ? result.assignments
+          : []
+        const nextCardTagIds = {}
+
+        for (const assignment of assignments) {
+          const key = String(assignment.userCardId)
+          nextCardTagIds[key] = [
+            ...(nextCardTagIds[key] ?? []),
+            assignment.tagId
+          ]
+        }
+
+        setCardTagIds(nextCardTagIds)
+      } catch {
+        if (!cancelled) {
+          setTags([])
+          setCardTagIds({})
+          setTagsError(true)
+        }
+      } finally {
+        if (!cancelled) setTagsLoading(false)
+      }
+    }
+
+    void loadTags()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (missingMode !== 'all') return
+
+    const runId = allMissingRunId.current + 1
+    allMissingRunId.current = runId
+
+    async function loadInitialMissingPage() {
+      setAllMissingPages([])
+      setAllMissingPending([])
+      setAllMissingPageIndex(0)
+      setAllMissingCursors({ es: 1, en: 1 })
+      setAllMissingExhausted({ es: false, en: false })
+      setAllMissingLoading(true)
+      setAllMissingError(false)
+
+      try {
+        const result = await scanMissingCatalogPage({
+          search: allMissingSearch,
+          preferredLanguage: language,
+          cursors: { es: 1, en: 1 },
+          exhausted: { es: false, en: false },
+          ownedIds: new Set(ownedIdsSignature.split('|').filter(Boolean)),
+          seenIds: new Set(),
+          pendingCards: []
+        })
+
+        if (allMissingRunId.current !== runId) return
+
+        setAllMissingPages(result.cards.length > 0 ? [result.cards] : [])
+        setAllMissingPending(result.pendingCards)
+        setAllMissingCursors(result.cursors)
+        setAllMissingExhausted(result.exhausted)
+      } catch {
+        if (allMissingRunId.current === runId) setAllMissingError(true)
+      } finally {
+        if (allMissingRunId.current === runId) setAllMissingLoading(false)
+      }
+    }
+
+    void loadInitialMissingPage()
+
+    return () => {
+      allMissingRunId.current += 1
+    }
+  }, [allMissingSearch, language, missingMode, ownedIdsSignature])
+
+  useEffect(() => {
+    let cancelled = false
+
     async function loadSets() {
       setSetsLoading(true)
       setSetsError(false)
@@ -1129,7 +1359,13 @@ function Collection({ texts, language, view = 'collection' }) {
 
       try {
         const result = await getSets(language)
-        const availableSets = Array.isArray(result) ? result : []
+        const availableSets = (Array.isArray(result) ? result : [])
+          .sort((first, second) =>
+            new Intl.Collator(language, {
+              sensitivity: 'base',
+              numeric: true
+            }).compare(first.name, second.name)
+          )
 
         if (!cancelled) {
           setSets(availableSets)
@@ -1204,15 +1440,34 @@ function Collection({ texts, language, view = 'collection' }) {
     let cancelled = false
 
     async function loadTransactions() {
+      setTransactionsLoading(true)
+      setTransactionsError(false)
+
       try {
-        const result = await getTransactions()
+        const result = await getTransactions(
+          transactionsPage,
+          transactionFilter
+        )
 
         if (!cancelled) {
-          setTransactions(Array.isArray(result) ? result : [])
+          setTransactions(
+            Array.isArray(result.transactions) ? result.transactions : []
+          )
+          setTransactionsPage(
+            Number.isSafeInteger(result.page) ? result.page : 1
+          )
+          setTransactionsTotalPages(
+            Number.isSafeInteger(result.totalPages) ? result.totalPages : 0
+          )
+          setTransactionsTotal(
+            Number.isSafeInteger(result.total) ? result.total : 0
+          )
         }
       } catch {
         if (!cancelled) {
           setTransactions([])
+          setTransactionsTotalPages(0)
+          setTransactionsTotal(0)
           setTransactionsError(true)
         }
       } finally {
@@ -1227,7 +1482,7 @@ function Collection({ texts, language, view = 'collection' }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [transactionFilter, transactionsPage, transactionsRefresh])
 
   useEffect(() => {
     if (transactions.length === 0) return
@@ -1238,15 +1493,17 @@ function Collection({ texts, language, view = 'collection' }) {
       const cardIds = [
         ...new Set(transactions.map((transaction) => transaction.cardId))
       ]
-      const entries = await Promise.all(
-        cardIds.map(async (cardId) => {
+      const entries = await mapWithConcurrency(
+        cardIds,
+        VISUAL_MATCH_CONCURRENCY,
+        async (cardId) => {
           try {
             const details = await getCardById(cardId, language)
             return [cardId, details]
           } catch {
             return [cardId, null]
           }
-        })
+        }
       )
 
       if (!cancelled) {
@@ -1260,6 +1517,118 @@ function Collection({ texts, language, view = 'collection' }) {
       cancelled = true
     }
   }, [transactions, language])
+
+  useEffect(() => {
+    if (!transactionActiveSearch) return
+
+    let cancelled = false
+
+    async function loadTransactionSearchPage() {
+      setTransactionSearching(true)
+      setTransactionSearchError(false)
+      setTransactionHasSearched(true)
+      setTransactionMessage('')
+
+      try {
+        const languages = language === 'en' ? ['en', 'es'] : ['es', 'en']
+        const [cardRequests, lastPageRequests] = await Promise.all([
+          Promise.allSettled(
+            languages.map((candidateLanguage) =>
+              getCards(
+                transactionActiveSearch,
+                transactionSearchPage,
+                candidateLanguage
+              )
+            )
+          ),
+          Promise.allSettled(
+            languages.map((candidateLanguage) =>
+              getLastCardPage(transactionActiveSearch, candidateLanguage)
+            )
+          )
+        ])
+        const fulfilledCards = cardRequests.filter(
+          (result) => result.status === 'fulfilled'
+        )
+
+        if (fulfilledCards.length === 0) {
+          throw new Error('Catálogo no disponible')
+        }
+
+        const lastPageCandidates = languages.map((_, index) => {
+          const exactPage = lastPageRequests[index]
+          if (exactPage.status === 'fulfilled') return exactPage.value
+
+          const pageResult = cardRequests[index]
+          if (pageResult.status !== 'fulfilled' || !Array.isArray(pageResult.value)) {
+            return 0
+          }
+
+          if (pageResult.value.length >= 12) return transactionSearchPage + 1
+          if (pageResult.value.length > 0) return transactionSearchPage
+          return 0
+        })
+        const lastPage = Math.max(0, ...lastPageCandidates)
+
+        if (lastPage > 0 && transactionSearchPage > lastPage) {
+          if (!cancelled) setTransactionSearchPage(lastPage)
+          return
+        }
+
+        const cardsById = new Map()
+
+        cardRequests.forEach((result, index) => {
+          if (result.status !== 'fulfilled') return
+
+          for (const card of Array.isArray(result.value) ? result.value : []) {
+            if (!cardsById.has(card.id)) {
+              cardsById.set(card.id, {
+                ...card,
+                sourceLanguage: languages[index]
+              })
+            }
+          }
+        })
+
+        const detailedResults = await mapWithConcurrency(
+          [...cardsById.values()],
+          VISUAL_MATCH_CONCURRENCY,
+          async (card) => {
+            try {
+              const details = await getCardById(card.id, card.sourceLanguage)
+              return { ...card, ...details, sourceLanguage: card.sourceLanguage }
+            } catch {
+              return card
+            }
+          }
+        )
+
+        if (cancelled) return
+
+        setTransactionSearchResults(detailedResults)
+        setTransactionSearchLastPage(lastPage)
+      } catch {
+        if (!cancelled) {
+          setTransactionSearchResults([])
+          setTransactionSearchLastPage(0)
+          setTransactionSearchError(true)
+        }
+      } finally {
+        if (!cancelled) setTransactionSearching(false)
+      }
+    }
+
+    void loadTransactionSearchPage()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    language,
+    transactionActiveSearch,
+    transactionSearchPage,
+    transactionSearchRefresh
+  ])
 
   useEffect(() => {
     if (transactions.length === 0) return
@@ -1372,6 +1741,50 @@ function Collection({ texts, language, view = 'collection' }) {
       cancelled = true
     }
   }, [photoResults])
+
+  useEffect(() => {
+    if (transactionSearchResults.length === 0) return
+
+    let cancelled = false
+
+    transactionSearchResults
+      .filter((card) => getCardImageUrls(card.image).length === 0)
+      .forEach(async (card) => {
+        try {
+          const alternateImage = await getAlternateCardImage(card.id, language)
+          if (cancelled) return
+
+          const urls = getCardImageUrls(alternateImage)
+          setTransactionImageStates((current) => ({
+            ...current,
+            [card.id]: {
+              language,
+              urls,
+              index: 0,
+              source: 'alternate',
+              unavailable: urls.length === 0
+            }
+          }))
+        } catch {
+          if (cancelled) return
+
+          setTransactionImageStates((current) => ({
+            ...current,
+            [card.id]: {
+              language,
+              urls: [],
+              index: 0,
+              source: 'alternate',
+              unavailable: true
+            }
+          }))
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [language, transactionSearchResults])
 
   async function handlePhotoImageError(card) {
     const fallbackState = {
@@ -2418,6 +2831,88 @@ async function handleQuantityChange(item, newQuantity) {
   }
 }
 
+async function handleCreateTag(event) {
+  event.preventDefault()
+
+  const text = newTagName.trim().replace(/\s+/g, ' ')
+  const name = [newTagEmoji, text].filter(Boolean).join(' ')
+  if (!name || tagBusyKey) return
+
+  setTagBusyKey('create')
+  setTagMessage('')
+
+  try {
+    const created = await createTag(name)
+    setTags((current) => [...current, created].sort((first, second) =>
+      first.name.localeCompare(second.name, language, { sensitivity: 'base' })
+    ))
+    setNewTagName('')
+    setNewTagEmoji('')
+    setTagMessage('created')
+  } catch (error) {
+    setTagMessage(error.status === 409 ? 'duplicate' : 'createError')
+  } finally {
+    setTagBusyKey('')
+  }
+}
+
+async function handleDeleteTag(tag) {
+  if (tagBusyKey) return
+  if (!window.confirm(texts.tags.confirmDelete(tag.name))) return
+
+  setTagBusyKey(`delete:${tag.id}`)
+  setTagMessage('')
+
+  try {
+    await deleteTag(tag.id)
+    setTags((current) => current.filter((item) => item.id !== tag.id))
+    setCollectionTagFilter((current) =>
+      current === String(tag.id) ? 'all' : current
+    )
+    setCardTagIds((current) => Object.fromEntries(
+      Object.entries(current).map(([cardId, tagIds]) => [
+        cardId,
+        tagIds.filter((tagId) => tagId !== tag.id)
+      ])
+    ))
+    setTagMessage('deleted')
+  } catch {
+    setTagMessage('deleteError')
+  } finally {
+    setTagBusyKey('')
+  }
+}
+
+async function handleCardTagChange(item, tagId, checked) {
+  const busyKey = `card:${item.id}:${tagId}`
+  if (tagBusyKey) return
+
+  setTagBusyKey(busyKey)
+  setTagMessage('')
+
+  try {
+    if (checked) {
+      await assignTagToCard(item.id, tagId)
+    } else {
+      await removeTagFromCard(item.id, tagId)
+    }
+
+    setCardTagIds((current) => {
+      const key = String(item.id)
+      const currentIds = current[key] ?? []
+      const nextIds = checked
+        ? [...new Set([...currentIds, tagId])]
+        : currentIds.filter((currentTagId) => currentTagId !== tagId)
+
+      return { ...current, [key]: nextIds }
+    })
+  } catch {
+    setTagMessage('assignmentError')
+  } finally {
+    setTagBusyKey('')
+  }
+}
+
 
 async function handleDelete(item) {
   if (busyId !== null || busyTradeId !== null) return
@@ -2581,6 +3076,88 @@ async function handleAddMissingCard(card) {
   }
 }
 
+async function loadAllMissingPage(reset = false) {
+  if (allMissingLoading && !reset) return
+
+  const runId = allMissingRunId.current + 1
+  allMissingRunId.current = runId
+  const startingPages = reset ? [] : allMissingPages
+  const startingPending = reset ? [] : allMissingPending
+  const startingCursors = reset ? { es: 1, en: 1 } : allMissingCursors
+  const startingExhausted = reset
+    ? { es: false, en: false }
+    : allMissingExhausted
+  const seenIds = new Set(
+    startingPages.flatMap((page) => page.map((card) => card.id))
+  )
+  const ownedIds = new Set(cards.map((card) => card.cardId))
+
+  setAllMissingLoading(true)
+  setAllMissingError(false)
+
+  if (reset) {
+    setAllMissingPages([])
+    setAllMissingPending([])
+    setAllMissingPageIndex(0)
+    setAllMissingCursors({ es: 1, en: 1 })
+    setAllMissingExhausted({ es: false, en: false })
+  }
+
+  try {
+    const result = await scanMissingCatalogPage({
+      search: allMissingSearch,
+      preferredLanguage: language,
+      cursors: startingCursors,
+      exhausted: startingExhausted,
+      ownedIds,
+      seenIds,
+      pendingCards: startingPending
+    })
+
+    if (allMissingRunId.current !== runId) return
+
+    const nextPages = result.cards.length > 0
+      ? [...startingPages, result.cards]
+      : startingPages
+
+    setAllMissingPages(nextPages)
+    setAllMissingPending(result.pendingCards)
+    setAllMissingPageIndex(Math.max(0, nextPages.length - 1))
+    setAllMissingCursors(result.cursors)
+    setAllMissingExhausted(result.exhausted)
+  } catch {
+    if (allMissingRunId.current === runId) setAllMissingError(true)
+  } finally {
+    if (allMissingRunId.current === runId) setAllMissingLoading(false)
+  }
+}
+
+function handleAllMissingSearch(event) {
+  event.preventDefault()
+  const query = allMissingSearchInput.trim()
+
+  if (query === allMissingSearch) {
+    void loadAllMissingPage(true)
+  } else {
+    setAllMissingSearch(query)
+  }
+}
+
+function handleTransactionCardSearch(event) {
+  event.preventDefault()
+
+  const query = transactionCardSearch.trim()
+  if (!query || transactionSearching) return
+
+  setTransactionSearchPage(1)
+
+  if (query === transactionActiveSearch) {
+    setTransactionSearchRefresh((current) => current + 1)
+  } else {
+    setTransactionActiveSearch(query)
+  }
+}
+
 async function handleTransactionSubmit(event) {
   event.preventDefault()
 
@@ -2590,7 +3167,10 @@ async function handleTransactionSubmit(event) {
   const unitPrice = Number(transactionUnitPrice)
   const normalizedNotes = transactionNotes.trim()
 
-  if (!cards.some((card) => card.cardId === transactionCardId)) {
+  if (
+    !transactionSelectedCard ||
+    transactionSelectedCard.id !== transactionCardId
+  ) {
     setTransactionMessage('cardRequired')
     return
   }
@@ -2629,7 +3209,7 @@ async function handleTransactionSubmit(event) {
   setTransactionMessage('')
 
   try {
-    const created = await createTransaction({
+    await createTransaction({
       cardId: transactionCardId,
       transactionType,
       quantity,
@@ -2638,21 +3218,34 @@ async function handleTransactionSubmit(event) {
       notes: normalizedNotes || null
     })
 
-    setTransactions((current) =>
-      [...current, created].sort((first, second) =>
-        second.transactionDate.localeCompare(first.transactionDate) ||
-        second.id - first.id
-      )
-    )
+    setTransactionCardDetails((current) => ({
+      ...current,
+      [transactionCardId]: transactionSelectedCard
+    }))
+    setTransactionsPage(1)
+    setTransactionsRefresh((current) => current + 1)
     setTransactionCardId('')
+    setTransactionSelectedCard(null)
+    setTransactionCardSearch('')
+    setTransactionActiveSearch('')
+    setTransactionSearchResults([])
+    setTransactionSearchPage(1)
+    setTransactionSearchLastPage(0)
+    setTransactionHasSearched(false)
     setTransactionType('purchase')
     setTransactionQuantity('1')
     setTransactionUnitPrice('0')
     setTransactionDate(getLocalDateValue())
     setTransactionNotes('')
     setTransactionMessage('success')
-  } catch {
-    setTransactionMessage('saveError')
+  } catch (error) {
+    setTransactionMessage(
+      error.status === 404
+        ? 'cardNotFound'
+        : error.status === 502
+          ? 'catalogUnavailable'
+          : 'saveError'
+    )
   } finally {
     setTransactionSaving(false)
   }
@@ -2662,9 +3255,91 @@ async function handleTransactionSubmit(event) {
     (total, card) => total + card.quantity,
     0
   )
+  const collectionCollator = new Intl.Collator(language, {
+    sensitivity: 'base',
+    numeric: true
+  })
+  const collectionRarities = [...new Set(
+    cards.map((card) => card.details?.rarity).filter(Boolean)
+  )].sort(collectionCollator.compare)
+  const collectionSetOptions = [...new Map(
+    cards
+      .filter((card) => card.details?.set?.name)
+      .map((card) => {
+        const set = card.details.set
+        const value = set.id || set.name
+        return [value, { value, name: set.name }]
+      })
+  ).values()].sort((first, second) =>
+    collectionCollator.compare(first.name, second.name)
+  )
+  const normalizedCollectionSearch = normalizeMatchValue(collectionSearch)
+  const filteredCollectionCards = cards
+    .filter((card) => {
+      const details = card.details ?? {}
+      const setValue = details.set?.id || details.set?.name || ''
+      const tagIds = cardTagIds[String(card.id)] ?? []
+
+      return (
+        !normalizedCollectionSearch ||
+        normalizeMatchValue(details.name).includes(normalizedCollectionSearch)
+      ) && (
+        collectionTagFilter === 'all' ||
+        (
+          collectionTagFilter === 'none'
+            ? tagIds.length === 0
+            : tagIds.includes(Number(collectionTagFilter))
+        )
+      ) && (
+        collectionRarityFilter === 'all' ||
+        details.rarity === collectionRarityFilter
+      ) && (
+        collectionSetFilter === 'all' ||
+        setValue === collectionSetFilter
+      )
+    })
+    .sort((first, second) => {
+      const firstDetails = first.details ?? {}
+      const secondDetails = second.details ?? {}
+
+      if (collectionSort === 'name-desc') {
+        return collectionCollator.compare(
+          secondDetails.name ?? '',
+          firstDetails.name ?? ''
+        )
+      }
+      if (collectionSort === 'quantity-desc') {
+        return second.quantity - first.quantity
+      }
+      if (collectionSort === 'quantity-asc') {
+        return first.quantity - second.quantity
+      }
+      if (collectionSort === 'rarity') {
+        return collectionCollator.compare(
+          firstDetails.rarity ?? '',
+          secondDetails.rarity ?? ''
+        )
+      }
+      if (collectionSort === 'set') {
+        return collectionCollator.compare(
+          firstDetails.set?.name ?? '',
+          secondDetails.set?.name ?? ''
+        )
+      }
+
+      return collectionCollator.compare(
+        firstDetails.name ?? '',
+        secondDetails.name ?? ''
+      )
+    })
   const visibleCards = activeCollectionTab === 'trade'
     ? cards.filter((card) => card.forTrade)
-    : cards
+    : filteredCollectionCards
+  const currentAllMissingCards = allMissingPages[allMissingPageIndex] ?? []
+  const canLoadMoreMissing = allMissingPageIndex < allMissingPages.length - 1 ||
+    allMissingPending.length > 0 ||
+    !allMissingExhausted.es ||
+    !allMissingExhausted.en
   const ownedCardIds = new Set(
     cards.map((card) => card.cardId)
   )
@@ -2699,16 +3374,6 @@ async function handleTransactionSubmit(event) {
     Number.isSafeInteger(previewQuantity * previewUnitPrice)
       ? previewQuantity * previewUnitPrice
       : 0
-  const filteredTransactions = transactionFilter === 'purchase'
-    ? transactions.filter(
-        (transaction) => transaction.transactionType === 'purchase'
-      )
-    : transactionFilter === 'sale'
-      ? transactions.filter(
-          (transaction) => transaction.transactionType === 'sale'
-        )
-      : transactions
-
   return (
     <section className={view === 'history' ? 'history-page' : 'collection'}>
       <h2>
@@ -2773,7 +3438,102 @@ async function handleTransactionSubmit(event) {
               ? texts.photoIdentification.close
               : texts.photoIdentification.open}
           </button>
+          <button
+            type="button"
+            aria-expanded={manageTagsOpen}
+            onClick={() => {
+              setManageTagsOpen((current) => !current)
+              setTagMessage('')
+            }}
+          >
+            {manageTagsOpen ? texts.tags.close : texts.tags.manage}
+          </button>
         </div>
+      )}
+
+      {view === 'collection' &&
+        activeCollectionTab === 'cards' &&
+        manageTagsOpen && (
+        <section className="tag-manager" aria-labelledby="tag-manager-title">
+          <h3 id="tag-manager-title">{texts.tags.title}</h3>
+
+          <form onSubmit={handleCreateTag}>
+            <span className="tag-emoji-label">{texts.tags.chooseEmoji}</span>
+            <div
+              className="tag-emoji-picker"
+              role="group"
+              aria-label={texts.tags.chooseEmoji}
+            >
+              {TAG_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  className={newTagEmoji === emoji ? 'is-selected' : ''}
+                  aria-pressed={newTagEmoji === emoji}
+                  aria-label={texts.tags.emojiOption(emoji)}
+                  disabled={Boolean(tagBusyKey)}
+                  onClick={() => setNewTagEmoji((current) =>
+                    current === emoji ? '' : emoji
+                  )}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <label htmlFor="new-tag-name">{texts.tags.nameLabel}</label>
+            <div>
+              <input
+                id="new-tag-name"
+                value={newTagName}
+                maxLength="36"
+                placeholder={texts.tags.namePlaceholder}
+                disabled={Boolean(tagBusyKey)}
+                onChange={(event) => setNewTagName(event.target.value)}
+              />
+              <button type="submit" disabled={!newTagName.trim() || Boolean(tagBusyKey)}>
+                {tagBusyKey === 'create' ? texts.tags.creating : texts.tags.create}
+              </button>
+            </div>
+          </form>
+
+          {tagsLoading && <p role="status">{texts.tags.loading}</p>}
+          {tagsError && <p role="alert">{texts.tags.loadError}</p>}
+          {!tagsLoading && !tagsError && tags.length === 0 && (
+            <p>{texts.tags.empty}</p>
+          )}
+          {tags.length > 0 && (
+            <ul className="tag-manager-list">
+              {tags.map((tag) => (
+                <li key={tag.id}>
+                  <span className="tag-chip">{tag.name}</span>
+                  <button
+                    type="button"
+                    disabled={Boolean(tagBusyKey)}
+                    onClick={() => handleDeleteTag(tag)}
+                  >
+                    {tagBusyKey === `delete:${tag.id}`
+                      ? texts.tags.deleting
+                      : texts.tags.delete}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {tagMessage && (
+            <p role={tagMessage.endsWith('Error') || tagMessage === 'duplicate' ? 'alert' : 'status'}>
+              {texts.tags[tagMessage]}
+            </p>
+          )}
+        </section>
+      )}
+
+      {view === 'collection' &&
+        activeCollectionTab === 'cards' &&
+        !manageTagsOpen &&
+        tagMessage && (
+        <p role={tagMessage.endsWith('Error') || tagMessage === 'duplicate' ? 'alert' : 'status'}>
+          {texts.tags[tagMessage]}
+        </p>
       )}
 
       {view === 'collection' &&
@@ -3283,10 +4043,96 @@ async function handleTransactionSubmit(event) {
         !error &&
         cards.length > 0 && (
         <>
+          {activeCollectionTab === 'cards' && (
+            <div className="collection-toolbar">
+              <label>
+                <span>{texts.collectionFilters.search}</span>
+                <input
+                  type="search"
+                  value={collectionSearch}
+                  placeholder={texts.collectionFilters.searchPlaceholder}
+                  onChange={(event) => setCollectionSearch(event.target.value)}
+                />
+              </label>
+
+              <label>
+                <span>{texts.collectionFilters.sort}</span>
+                <select
+                  value={collectionSort}
+                  onChange={(event) => setCollectionSort(event.target.value)}
+                >
+                  <option value="name-asc">{texts.collectionFilters.nameAsc}</option>
+                  <option value="name-desc">{texts.collectionFilters.nameDesc}</option>
+                  <option value="quantity-desc">{texts.collectionFilters.quantityDesc}</option>
+                  <option value="quantity-asc">{texts.collectionFilters.quantityAsc}</option>
+                  <option value="rarity">{texts.collectionFilters.rarity}</option>
+                  <option value="set">{texts.collectionFilters.expansion}</option>
+                </select>
+              </label>
+
+              <label>
+                <span>{texts.collectionFilters.tag}</span>
+                <select
+                  value={collectionTagFilter}
+                  onChange={(event) => setCollectionTagFilter(event.target.value)}
+                >
+                  <option value="all">{texts.collectionFilters.allTags}</option>
+                  <option value="none">{texts.collectionFilters.withoutTags}</option>
+                  {tags.map((tag) => (
+                    <option key={tag.id} value={tag.id}>{tag.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                <span>{texts.collectionFilters.rarity}</span>
+                <select
+                  value={collectionRarityFilter}
+                  onChange={(event) => setCollectionRarityFilter(event.target.value)}
+                >
+                  <option value="all">{texts.collectionFilters.allRarities}</option>
+                  {collectionRarities.map((rarity) => (
+                    <option key={rarity} value={rarity}>{rarity}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                <span>{texts.collectionFilters.expansion}</span>
+                <select
+                  value={collectionSetFilter}
+                  onChange={(event) => setCollectionSetFilter(event.target.value)}
+                >
+                  <option value="all">{texts.collectionFilters.allExpansions}</option>
+                  {collectionSetOptions.map((set) => (
+                    <option key={set.value} value={set.value}>{set.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCollectionSearch('')
+                  setCollectionSort('name-asc')
+                  setCollectionTagFilter('all')
+                  setCollectionRarityFilter('all')
+                  setCollectionSetFilter('all')
+                }}
+              >
+                {texts.collectionFilters.reset}
+              </button>
+            </div>
+          )}
+
           <p>{texts.collection.total(totalCards, cards.length)}</p>
 
           {visibleCards.length === 0 ? (
-            <p className="trade-filter-empty">{texts.collection.noTradeCards}</p>
+            <p className="trade-filter-empty">
+              {activeCollectionTab === 'trade'
+                ? texts.collection.noTradeCards
+                : texts.collectionFilters.noResults}
+            </p>
           ) : (
           <div className="collection-grid">
             {visibleCards.map((item) => {
@@ -3307,6 +4153,54 @@ async function handleTransactionSubmit(event) {
                   texts={texts}
                   language={language}
                 />
+
+                {(cardTagIds[String(item.id)] ?? []).length > 0 && (
+                  <div className="card-tag-chips" aria-label={texts.tags.assigned}>
+                    {(cardTagIds[String(item.id)] ?? []).map((tagId) => {
+                      const tag = tags.find((entry) => entry.id === tagId)
+                      return tag ? <span key={tag.id}>{tag.name}</span> : null
+                    })}
+                  </div>
+                )}
+
+                {activeCollectionTab === 'cards' && (
+                  <div className="card-tag-editor">
+                    <button
+                      type="button"
+                      className="tag-editor-toggle"
+                      aria-expanded={editingTagsCardId === item.id}
+                      onClick={() => setEditingTagsCardId((current) =>
+                        current === item.id ? null : item.id
+                      )}
+                    >
+                      {editingTagsCardId === item.id
+                        ? texts.tags.hideEditor
+                        : texts.tags.edit}
+                    </button>
+
+                    {editingTagsCardId === item.id && (
+                      <div className="tag-checkboxes">
+                        {tags.length === 0 ? (
+                          <span>{texts.tags.noTags}</span>
+                        ) : tags.map((tag) => (
+                          <label key={tag.id}>
+                            <input
+                              type="checkbox"
+                              checked={(cardTagIds[String(item.id)] ?? []).includes(tag.id)}
+                              disabled={Boolean(tagBusyKey)}
+                              onChange={(event) => handleCardTagChange(
+                                item,
+                                tag.id,
+                                event.target.checked
+                              )}
+                            />
+                            <span>{tag.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="trade-control">
                   <label>
@@ -3374,6 +4268,135 @@ async function handleTransactionSubmit(event) {
         >
           <h3 id="set-completion-title">{texts.setCompletion.title}</h3>
           <p>{texts.setCompletion.description}</p>
+
+          <div className="missing-mode-tabs" role="tablist" aria-label={texts.setCompletion.modeLabel}>
+            <button
+              type="button"
+              role="tab"
+              className={missingMode === 'all' ? 'is-active' : ''}
+              aria-selected={missingMode === 'all'}
+              onClick={() => setMissingMode('all')}
+            >
+              {texts.setCompletion.allMissingMode}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={missingMode === 'set' ? 'is-active' : ''}
+              aria-selected={missingMode === 'set'}
+              onClick={() => setMissingMode('set')}
+            >
+              {texts.setCompletion.bySetMode}
+            </button>
+          </div>
+
+          {missingMode === 'all' && (
+            <div className="all-missing-cards">
+              <form className="all-missing-search" onSubmit={handleAllMissingSearch}>
+                <label htmlFor="all-missing-search">
+                  {texts.setCompletion.searchCardLabel}
+                </label>
+                <div>
+                  <input
+                    id="all-missing-search"
+                    type="search"
+                    value={allMissingSearchInput}
+                    placeholder={texts.setCompletion.searchCardPlaceholder}
+                    disabled={allMissingLoading}
+                    onChange={(event) => setAllMissingSearchInput(event.target.value)}
+                  />
+                  <button type="submit" disabled={allMissingLoading}>
+                    {texts.setCompletion.search}
+                  </button>
+                  {(allMissingSearch || allMissingSearchInput) && (
+                    <button
+                      type="button"
+                      disabled={allMissingLoading}
+                      onClick={() => {
+                        setAllMissingSearchInput('')
+                        setAllMissingSearch('')
+                      }}
+                    >
+                      {texts.setCompletion.clearSearch}
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              <p>{texts.setCompletion.allMissingHelp}</p>
+              {allMissingLoading && currentAllMissingCards.length === 0 && (
+                <p role="status">{texts.setCompletion.loadingMissing}</p>
+              )}
+              {allMissingError && (
+                <p role="alert">{texts.setCompletion.loadMissingError}</p>
+              )}
+              {setFeedback && (
+                <p role={setFeedback.type === 'error' ? 'alert' : 'status'}>
+                  {setFeedback.type === 'error'
+                    ? texts.setCompletion.addError
+                    : texts.setCompletion.added(
+                        setFeedback.name,
+                        setFeedback.quantity
+                      )}
+                </p>
+              )}
+
+              {!allMissingLoading &&
+                !allMissingError &&
+                currentAllMissingCards.length === 0 && (
+                <p>{texts.setCompletion.noMissingResults}</p>
+              )}
+
+              {currentAllMissingCards.length > 0 && (
+                <div className="pokemon-grid set-card-grid">
+                  {currentAllMissingCards.map((card) => (
+                    <div key={card.id} className="set-card-item set-card-item--missing">
+                      <PokemonCard
+                        card={{
+                          ...card,
+                          name: card.name || card.id,
+                          localId: card.localId || '—'
+                        }}
+                        onAdd={handleAddMissingCard}
+                        adding={addingMissingCardId === card.id}
+                        texts={texts}
+                        language={card.sourceLanguage ?? language}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <nav className="missing-pagination" aria-label={texts.setCompletion.paginationLabel}>
+                <button
+                  type="button"
+                  disabled={allMissingPageIndex === 0 || allMissingLoading}
+                  onClick={() => setAllMissingPageIndex((current) => current - 1)}
+                >
+                  {texts.setCompletion.previous}
+                </button>
+                <span>{texts.setCompletion.page(allMissingPageIndex + 1)}</span>
+                <button
+                  type="button"
+                  disabled={!canLoadMoreMissing || allMissingLoading}
+                  onClick={() => {
+                    if (allMissingPageIndex < allMissingPages.length - 1) {
+                      setAllMissingPageIndex((current) => current + 1)
+                    } else {
+                      void loadAllMissingPage(false)
+                    }
+                  }}
+                >
+                  {allMissingLoading
+                    ? texts.setCompletion.loadingMore
+                    : texts.setCompletion.next}
+                </button>
+              </nav>
+            </div>
+          )}
+
+          {missingMode === 'set' && (
+            <>
 
           {setsLoading && (
             <p role="status">{texts.setCompletion.loadingSets}</p>
@@ -3535,6 +4558,8 @@ async function handleTransactionSubmit(event) {
               )}
             </div>
           )}
+            </>
+          )}
         </section>
       )}
 
@@ -3550,33 +4575,154 @@ async function handleTransactionSubmit(event) {
             </p>
 
             <form
+              className="transaction-card-search"
+              onSubmit={handleTransactionCardSearch}
+            >
+              <label htmlFor="transaction-card-search">
+                {texts.transactions.searchCardLabel}
+              </label>
+              <div>
+                <input
+                  id="transaction-card-search"
+                  type="search"
+                  value={transactionCardSearch}
+                  placeholder={texts.transactions.searchCardPlaceholder}
+                  disabled={transactionSearching || transactionSaving}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    setTransactionCardSearch(value)
+                    setTransactionHasSearched(false)
+
+                    if (value.trim() !== transactionActiveSearch) {
+                      setTransactionActiveSearch('')
+                      setTransactionSearchResults([])
+                      setTransactionSearchPage(1)
+                      setTransactionSearchLastPage(0)
+                      setTransactionSearchError(false)
+                    }
+                  }}
+                  required
+                />
+                <button type="submit" disabled={transactionSearching || transactionSaving}>
+                  {transactionSearching
+                    ? texts.transactions.searchingCards
+                    : texts.transactions.searchCard}
+                </button>
+              </div>
+            </form>
+
+            {transactionSearchError && (
+              <p role="alert">{texts.transactions.catalogUnavailable}</p>
+            )}
+            {!transactionSearching &&
+              !transactionSearchError &&
+              transactionHasSearched &&
+              transactionSearchResults.length === 0 && (
+              <p>{texts.transactions.noCardResults}</p>
+            )}
+
+            {transactionSearchResults.length > 0 && (
+              <div className="transaction-card-results">
+                {transactionSearchResults.map((card) => {
+                  const imageState = transactionImageStates[card.id]
+                  const imageUrl = imageState
+                    ? imageState.urls[imageState.index] ?? null
+                    : getCardImageUrls(card.image)[0] ?? null
+                  const selected = transactionCardId === card.id
+
+                  return (
+                    <button
+                      key={card.id}
+                      type="button"
+                      className={selected ? 'is-selected' : ''}
+                      onClick={() => {
+                        setTransactionCardId(card.id)
+                        setTransactionSelectedCard(card)
+                        setTransactionMessage('')
+                      }}
+                    >
+                      {imageUrl && !imageState?.unavailable ? (
+                        <img
+                          src={imageUrl}
+                          alt={texts.card.imageAlt(card.name)}
+                          loading="lazy"
+                          onError={() => handleTransactionImageError(
+                            card.id,
+                            card.image
+                          )}
+                        />
+                      ) : (
+                        <span className="transaction-card-placeholder">
+                          {texts.card.noImage}
+                        </span>
+                      )}
+                      <span>
+                        <strong>{card.name}</strong>
+                        <small>{card.set?.name || texts.card.unavailable}</small>
+                        <small>{texts.transactions.cardNumber(card.localId || '—')}</small>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {transactionHasSearched &&
+              !transactionSearchError &&
+              transactionSearchLastPage > 1 && (
+              <nav
+                className="transaction-pagination"
+                aria-label={texts.transactions.searchPaginationLabel}
+              >
+                <button
+                  type="button"
+                  disabled={transactionSearching || transactionSearchPage <= 1}
+                  onClick={() => setTransactionSearchPage((current) =>
+                    Math.max(1, current - 1)
+                  )}
+                >
+                  {texts.transactions.previous}
+                </button>
+                <span>
+                  {texts.transactions.pageOf(
+                    transactionSearchPage,
+                    transactionSearchLastPage
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={
+                    transactionSearching ||
+                    transactionSearchPage >= transactionSearchLastPage
+                  }
+                  onClick={() => setTransactionSearchPage((current) =>
+                    Math.min(transactionSearchLastPage, current + 1)
+                  )}
+                >
+                  {texts.transactions.next}
+                </button>
+              </nav>
+            )}
+
+            <form
               className="transaction-form"
               onSubmit={handleTransactionSubmit}
               aria-describedby="transaction-inventory-notice"
             >
               <h4>{texts.transactions.formTitle}</h4>
 
-              {cards.length === 0 && (
-                <p>{texts.transactions.noCardsForForm}</p>
-              )}
-
-              <label htmlFor="transaction-card">
+              <span className="transaction-selected-label">
                 {texts.transactions.cardLabel}
-              </label>
-              <select
-                id="transaction-card"
-                value={transactionCardId}
-                onChange={(event) => setTransactionCardId(event.target.value)}
-                disabled={cards.length === 0 || transactionSaving}
-                required
-              >
-                <option value="">{texts.transactions.cardPlaceholder}</option>
-                {cards.map((card) => (
-                  <option key={card.id} value={card.cardId}>
-                    {card.details?.name || texts.collection.cardFallback(card.cardId)}
-                  </option>
-                ))}
-              </select>
+              </span>
+              <div className="transaction-selected-card">
+                {transactionSelectedCard
+                  ? texts.transactions.selectedCard(
+                      transactionSelectedCard.name,
+                      transactionSelectedCard.set?.name || texts.card.unavailable,
+                      transactionSelectedCard.localId || '—'
+                    )
+                  : texts.transactions.cardPlaceholder}
+              </div>
 
               <label htmlFor="transaction-type">
                 {texts.transactions.typeLabel}
@@ -3662,7 +4808,7 @@ async function handleTransactionSubmit(event) {
 
               <button
                 type="submit"
-                disabled={transactionSaving || cards.length === 0}
+                disabled={transactionSaving || !transactionSelectedCard}
               >
                 {transactionSaving
                   ? texts.transactions.saving
@@ -3673,6 +4819,31 @@ async function handleTransactionSubmit(event) {
             <div className="transaction-history-list">
               <h4>{texts.transactions.historyTitle}</h4>
 
+              <div
+                className="transaction-filters"
+                role="group"
+                aria-label={texts.transactions.filterLabel}
+              >
+                {[
+                  ['all', texts.transactions.all],
+                  ['purchase', texts.transactions.purchases],
+                  ['sale', texts.transactions.sales]
+                ].map(([filter, label]) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className={transactionFilter === filter ? 'is-active' : ''}
+                    aria-pressed={transactionFilter === filter}
+                    onClick={() => {
+                      setTransactionFilter(filter)
+                      setTransactionsPage(1)
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
               {transactionsLoading && (
                 <p role="status">{texts.transactions.loading}</p>
               )}
@@ -3681,51 +4852,22 @@ async function handleTransactionSubmit(event) {
                 <p role="alert">{texts.transactions.loadError}</p>
               )}
 
-              {!transactionsLoading && !transactionsError && transactions.length === 0 && (
-                <p>{texts.transactions.empty}</p>
+              {!transactionsLoading && !transactionsError && transactionsTotal === 0 && (
+                <p>
+                  {transactionFilter === 'all'
+                    ? texts.transactions.empty
+                    : texts.transactions.noResults}
+                </p>
               )}
 
               {!transactionsLoading && !transactionsError && transactions.length > 0 && (
                 <>
+                  <p>{texts.transactions.historyCount(transactionsTotal)}</p>
                   <div
-                    className="transaction-filters"
-                    role="group"
-                    aria-label={texts.transactions.filterLabel}
+                    className="transaction-list"
+                    aria-label={texts.transactions.historyLabel}
                   >
-                    <button
-                      type="button"
-                      className={transactionFilter === 'all' ? 'is-active' : ''}
-                      aria-pressed={transactionFilter === 'all'}
-                      onClick={() => setTransactionFilter('all')}
-                    >
-                      {texts.transactions.all}
-                    </button>
-                    <button
-                      type="button"
-                      className={transactionFilter === 'purchase' ? 'is-active' : ''}
-                      aria-pressed={transactionFilter === 'purchase'}
-                      onClick={() => setTransactionFilter('purchase')}
-                    >
-                      {texts.transactions.purchases}
-                    </button>
-                    <button
-                      type="button"
-                      className={transactionFilter === 'sale' ? 'is-active' : ''}
-                      aria-pressed={transactionFilter === 'sale'}
-                      onClick={() => setTransactionFilter('sale')}
-                    >
-                      {texts.transactions.sales}
-                    </button>
-                  </div>
-
-                  {filteredTransactions.length === 0 ? (
-                    <p>{texts.transactions.noResults}</p>
-                  ) : (
-                    <div
-                      className="transaction-list"
-                      aria-label={texts.transactions.historyLabel}
-                    >
-                      {filteredTransactions.map((transaction) => {
+                    {transactions.map((transaction) => {
                         const collectionCard = cards.find(
                           (card) => card.cardId === transaction.cardId
                         )
@@ -3810,8 +4952,42 @@ async function handleTransactionSubmit(event) {
                             </div>
                           </article>
                         )
-                      })}
-                    </div>
+                    })}
+                  </div>
+
+                  {transactionsTotalPages > 1 && (
+                    <nav
+                      className="transaction-pagination"
+                      aria-label={texts.transactions.historyPaginationLabel}
+                    >
+                      <button
+                        type="button"
+                        disabled={transactionsLoading || transactionsPage <= 1}
+                        onClick={() => setTransactionsPage((current) =>
+                          Math.max(1, current - 1)
+                        )}
+                      >
+                        {texts.transactions.previous}
+                      </button>
+                      <span>
+                        {texts.transactions.pageOf(
+                          transactionsPage,
+                          transactionsTotalPages
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={
+                          transactionsLoading ||
+                          transactionsPage >= transactionsTotalPages
+                        }
+                        onClick={() => setTransactionsPage((current) =>
+                          Math.min(transactionsTotalPages, current + 1)
+                        )}
+                      >
+                        {texts.transactions.next}
+                      </button>
+                    </nav>
                   )}
                 </>
               )}

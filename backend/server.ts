@@ -3,6 +3,7 @@ import {
   getLastCardsPageFromTcgdex,
   getComplementedCardFromProviders,
   getFallbackCardImage,
+  getCardCatalogFiltersFromTcgdex,
   getSetsFromTcgdex,
   getSetFromTcgdex
 } from './services/tcgdexService.ts'
@@ -21,6 +22,13 @@ function getLanguage(url: URL): 'es' | 'en' | null {
   return language === 'es' || language === 'en'
     ? language
     : null
+}
+
+function isValidFilterValue(value: string, maxLength = 100) {
+  return value.length <= maxLength && [...value].every((character) => {
+    const code = character.charCodeAt(0)
+    return code >= 32 && code !== 127
+  })
 }
 
 // Limpiamos las sesiones vencidas cada vez que inicia el servidor.
@@ -63,12 +71,38 @@ if (authResponse) {
 
     if (
       request.method === 'GET' &&
+      url.pathname === '/api/cards/filters'
+    ) {
+      const language = getLanguage(url)
+
+      if (!language) {
+        return Response.json({ error: 'Idioma inválido' }, { status: 400 })
+      }
+
+      try {
+        return Response.json(
+          await getCardCatalogFiltersFromTcgdex(language)
+        )
+      } catch {
+        return Response.json(
+          { error: 'No se pudieron obtener los filtros' },
+          { status: 502 }
+        )
+      }
+    }
+
+    if (
+      request.method === 'GET' &&
       url.pathname === '/api/cards'
     ) {
       const search = url.searchParams.get('search') ?? ''
       const localId = url.searchParams.get('localId') ?? ''
       const hp = url.searchParams.get('hp') ?? ''
       const exactLocalIdValue = url.searchParams.get('exactLocalId') ?? ''
+      const type = url.searchParams.get('type') ?? ''
+      const rarity = url.searchParams.get('rarity') ?? ''
+      const setId = url.searchParams.get('setId') ?? ''
+      const sort = url.searchParams.get('sort') ?? ''
       const exactLocalId = exactLocalIdValue === 'true'
       const page = Number(url.searchParams.get('page') ?? '1')
       const language = getLanguage(url)
@@ -92,7 +126,11 @@ if (authResponse) {
         localId.length > 30 ||
         (hp && (!/^\d{2,3}$/.test(hp) || Number(hp) > 999)) ||
         !['', 'true', 'false'].includes(exactLocalIdValue) ||
-        (localId && !/^[a-zA-Z0-9._-]+$/.test(localId))
+        (localId && !/^[a-zA-Z0-9._-]+$/.test(localId)) ||
+        !isValidFilterValue(type) ||
+        !isValidFilterValue(rarity) ||
+        !isValidFilterValue(setId) ||
+        !['', 'name-asc', 'name-desc'].includes(sort)
       ) {
         return Response.json(
           { error: 'Filtros de cartas inválidos' },
@@ -107,7 +145,13 @@ if (authResponse) {
           language,
           localId,
           exactLocalId,
-          hp
+          hp,
+          {
+            type,
+            rarity,
+            setId,
+            sort: sort as '' | 'name-asc' | 'name-desc'
+          }
         )
         return Response.json(cards)
       } catch {
@@ -124,6 +168,10 @@ if (authResponse) {
     ) {
       const search = url.searchParams.get('search') ?? ''
       const localId = url.searchParams.get('localId') ?? ''
+      const type = url.searchParams.get('type') ?? ''
+      const rarity = url.searchParams.get('rarity') ?? ''
+      const setId = url.searchParams.get('setId') ?? ''
+      const sort = url.searchParams.get('sort') ?? ''
       const language = getLanguage(url)
 
       if (!language) {
@@ -136,7 +184,11 @@ if (authResponse) {
       if (
         search.length > 100 ||
         localId.length > 30 ||
-        (localId && !/^[a-zA-Z0-9._-]+$/.test(localId))
+        (localId && !/^[a-zA-Z0-9._-]+$/.test(localId)) ||
+        !isValidFilterValue(type) ||
+        !isValidFilterValue(rarity) ||
+        !isValidFilterValue(setId) ||
+        !['', 'name-asc', 'name-desc'].includes(sort)
       ) {
         return Response.json(
           { error: 'Filtros de cartas inválidos' },
@@ -148,7 +200,13 @@ if (authResponse) {
         const lastPage = await getLastCardsPageFromTcgdex(
           search,
           language,
-          localId
+          localId,
+          {
+            type,
+            rarity,
+            setId,
+            sort: sort as '' | 'name-asc' | 'name-desc'
+          }
         )
         return Response.json({ lastPage })
       } catch {

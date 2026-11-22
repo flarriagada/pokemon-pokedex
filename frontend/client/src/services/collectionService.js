@@ -1,6 +1,7 @@
 
 const COLLECTION_URL = '/api/collection'
 const TRANSACTIONS_URL = '/api/transactions'
+const TAGS_URL = '/api/tags'
 
 export async function getCollection() {
   const response = await fetch(COLLECTION_URL)
@@ -80,8 +81,12 @@ export async function deleteCollectionCard(id) {
   }
 }
 
-export async function getTransactions() {
-  const response = await fetch(TRANSACTIONS_URL)
+export async function getTransactions(page = 1, type = 'all') {
+  const params = new URLSearchParams({
+    page: String(page),
+    type
+  })
+  const response = await fetch(`${TRANSACTIONS_URL}?${params.toString()}`)
 
   if (!response.ok) {
     throw new Error('No se pudo obtener el historial')
@@ -100,8 +105,61 @@ export async function createTransaction(data) {
   })
 
   if (!response.ok) {
-    throw new Error('No se pudo registrar el movimiento')
+    const body = await response.json().catch(() => ({}))
+    const error = new Error('No se pudo registrar el movimiento')
+    error.status = response.status
+    error.code = body.error
+    throw error
   }
 
   return response.json()
+}
+
+export async function getTags() {
+  const response = await fetch(TAGS_URL)
+
+  if (!response.ok) throw new Error('No se pudieron obtener las etiquetas')
+  return response.json()
+}
+
+export async function createTag(name) {
+  const response = await fetch(TAGS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  })
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    const error = new Error('No se pudo crear la etiqueta')
+    error.status = response.status
+    error.code = body.error
+    throw error
+  }
+
+  return response.json()
+}
+
+export async function deleteTag(id) {
+  const response = await fetch(`${TAGS_URL}/${id}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('No se pudo eliminar la etiqueta')
+}
+
+export async function assignTagToCard(userCardId, tagId) {
+  const response = await fetch(
+    `${COLLECTION_URL}/${userCardId}/tags/${tagId}`,
+    { method: 'POST' }
+  )
+
+  if (!response.ok) throw new Error('No se pudo asignar la etiqueta')
+  return response.json()
+}
+
+export async function removeTagFromCard(userCardId, tagId) {
+  const response = await fetch(
+    `${COLLECTION_URL}/${userCardId}/tags/${tagId}`,
+    { method: 'DELETE' }
+  )
+
+  if (!response.ok) throw new Error('No se pudo quitar la etiqueta')
 }

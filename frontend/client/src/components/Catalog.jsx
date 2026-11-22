@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import {
   getCards,
   getCardById,
-  getLastCardPage
+  getLastCardPage,
+  getCatalogFilterOptions,
+  getSets
 } from '../services/cardService'
 import PokemonCard from './PokemonCard'
 import { addCardToCollection } from '../services/collectionService'
@@ -12,6 +14,23 @@ import './Catalog.css'
 const CARDS_PER_PAGE = 12
 const DESKTOP_PAGE_COUNT = 5
 const MOBILE_PAGE_COUNT = 3
+const EMPTY_FILTERS = {
+  type: '',
+  rarity: '',
+  setId: '',
+  sort: 'name-asc'
+}
+
+function getCatalogQueryKey(language, search, filters) {
+  return [
+    language,
+    search,
+    filters.type,
+    filters.rarity,
+    filters.setId,
+    filters.sort
+  ].join(':')
+}
 
 function getNearbyPages(currentPage, lastPage, visibleCount) {
   if (lastPage < 1) return []
@@ -34,7 +53,15 @@ function getNearbyPages(currentPage, lastPage, visibleCount) {
 function Catalog({ texts, language }) {
   const [searchText, setSearchText] = useState('')
   const [search, setSearch] = useState('')
-  const queryKey = `${language}:${search}`
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [filterOptions, setFilterOptions] = useState({
+    types: [],
+    rarities: [],
+    sets: []
+  })
+  const [filtersLoading, setFiltersLoading] = useState(true)
+  const [filtersError, setFiltersError] = useState(false)
+  const queryKey = getCatalogQueryKey(language, search, filters)
   const [pageState, setPageState] = useState({ queryKey, page: 1 })
   const [lastPageState, setLastPageState] = useState({
     queryKey: '',
@@ -54,9 +81,51 @@ function Catalog({ texts, language }) {
   useEffect(() => {
     let cancelled = false
 
+    async function loadFilterOptions() {
+      setFiltersLoading(true)
+      setFiltersError(false)
+
+      try {
+        const [options, sets] = await Promise.all([
+          getCatalogFilterOptions(language),
+          getSets(language)
+        ])
+
+        if (cancelled) return
+
+        const collator = new Intl.Collator(language, {
+          sensitivity: 'base',
+          numeric: true
+        })
+
+        setFilterOptions({
+          types: Array.isArray(options.types) ? options.types : [],
+          rarities: Array.isArray(options.rarities) ? options.rarities : [],
+          sets: (Array.isArray(sets) ? sets : []).sort((first, second) =>
+            collator.compare(first.name, second.name)
+          )
+        })
+        setFilters(EMPTY_FILTERS)
+      } catch {
+        if (!cancelled) setFiltersError(true)
+      } finally {
+        if (!cancelled) setFiltersLoading(false)
+      }
+    }
+
+    void loadFilterOptions()
+
+    return () => {
+      cancelled = true
+    }
+  }, [language])
+
+  useEffect(() => {
+    let cancelled = false
+
     async function loadLastPage() {
       try {
-        const lastPage = await getLastCardPage(search, language)
+        const lastPage = await getLastCardPage(search, language, filters)
 
         if (cancelled) return
 
@@ -91,7 +160,7 @@ function Catalog({ texts, language }) {
     return () => {
       cancelled = true
     }
-  }, [language, queryKey, search])
+  }, [filters, language, queryKey, search])
 
   useEffect(() => {
     let cancelled = false
@@ -101,7 +170,15 @@ function Catalog({ texts, language }) {
       setError(false)
 
       try { //Obtenemos cartas resumidas del catálogo
-        const basicCards = await getCards(search, page, language)
+        const basicCards = await getCards(
+          search,
+          page,
+          language,
+          '',
+          false,
+          '',
+          filters
+        )
 
         if (cancelled) return
         
@@ -141,14 +218,14 @@ function Catalog({ texts, language }) {
     return () => {
       cancelled = true
     }
-  }, [search, page, language])
+  }, [filters, search, page, language])
 
   function handleSearch(event) {
     event.preventDefault()
     const normalizedSearch = searchText.trim()
 
     setPageState({
-      queryKey: `${language}:${normalizedSearch}`,
+      queryKey: getCatalogQueryKey(language, normalizedSearch, filters),
       page: 1
     })
     setSearch(normalizedSearch)
@@ -157,7 +234,20 @@ function Catalog({ texts, language }) {
   function showAll() {
     setSearchText('')
     setSearch('')
-    setPageState({ queryKey: `${language}:`, page: 1 })
+    setFilters(EMPTY_FILTERS)
+    setPageState({
+      queryKey: getCatalogQueryKey(language, '', EMPTY_FILTERS),
+      page: 1
+    })
+  }
+
+  function handleFilterChange(key, value) {
+    const nextFilters = { ...filters, [key]: value }
+    setFilters(nextFilters)
+    setPageState({
+      queryKey: getCatalogQueryKey(language, search, nextFilters),
+      page: 1
+    })
   }
 
   function goToPage(nextPage) {
@@ -199,7 +289,6 @@ async function handleAddToCollection(card) {
   }
 }
 
-
   return (
     <section className="catalog">
       <h2>{texts.catalog.title}</h2>
@@ -223,8 +312,62 @@ async function handleAddToCollection(card) {
         <button type="button" onClick={showAll}>
           {texts.catalog.showAll}
         </button>
+
+        <div className="catalog-filter-grid">
+          <label htmlFor="catalog-type">{texts.catalog.typeFilter}</label>
+          <select
+            id="catalog-type"
+            value={filters.type}
+            disabled={filtersLoading}
+            onChange={(event) => handleFilterChange('type', event.target.value)}
+          >
+            <option value="">{texts.catalog.allTypes}</option>
+            {filterOptions.types.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+
+          <label htmlFor="catalog-rarity">{texts.catalog.rarityFilter}</label>
+          <select
+            id="catalog-rarity"
+            value={filters.rarity}
+            disabled={filtersLoading}
+            onChange={(event) => handleFilterChange('rarity', event.target.value)}
+          >
+            <option value="">{texts.catalog.allRarities}</option>
+            {filterOptions.rarities.map((rarity) => (
+              <option key={rarity} value={rarity}>{rarity}</option>
+            ))}
+          </select>
+
+          <label htmlFor="catalog-set">{texts.catalog.expansionFilter}</label>
+          <select
+            id="catalog-set"
+            value={filters.setId}
+            disabled={filtersLoading}
+            onChange={(event) => handleFilterChange('setId', event.target.value)}
+          >
+            <option value="">{texts.catalog.allExpansions}</option>
+            {filterOptions.sets.map((set) => (
+              <option key={set.id} value={set.id}>{set.name}</option>
+            ))}
+          </select>
+
+          <label htmlFor="catalog-sort">{texts.catalog.sortLabel}</label>
+          <select
+            id="catalog-sort"
+            value={filters.sort}
+            onChange={(event) => handleFilterChange('sort', event.target.value)}
+          >
+            <option value="name-asc">{texts.catalog.nameAsc}</option>
+            <option value="name-desc">{texts.catalog.nameDesc}</option>
+          </select>
+        </div>
       
       </form>
+
+      {filtersLoading && <p role="status">{texts.catalog.loadingFilters}</p>}
+      {filtersError && <p role="alert">{texts.catalog.filtersError}</p>}
 
       {/* Mensaje de confirmación o error al agregar una carta */}
       {addFeedback && (

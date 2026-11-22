@@ -1,5 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { getUserFromSession } from '../services/sessionService.ts'
+import { getCardFromTcgdex } from '../services/tcgdexService.ts'
+
+const TRANSACTIONS_PAGE_SIZE = 20
 
 function isValidTransactionDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -19,6 +22,7 @@ export async function handleCollectionRequest(
 
 const isCollectionRoot = url.pathname === '/api/collection'
 const isTransactionsRoot = url.pathname === '/api/transactions'
+const isTagsRoot = url.pathname === '/api/tags'
 
 const itemMatch = url.pathname.match(
   /^\/api\/collection\/(\d+)$/
@@ -28,11 +32,22 @@ const tradeMatch = url.pathname.match(
   /^\/api\/collection\/(\d+)\/trade$/
 )
 
+const tagMatch = url.pathname.match(
+  /^\/api\/tags\/(\d+)$/
+)
+
+const cardTagMatch = url.pathname.match(
+  /^\/api\/collection\/(\d+)\/tags\/(\d+)$/
+)
+
 if (
   !isCollectionRoot &&
   !isTransactionsRoot &&
+  !isTagsRoot &&
   !itemMatch &&
-  !tradeMatch
+  !tradeMatch &&
+  !tagMatch &&
+  !cardTagMatch
 ) {
   return null
 }
@@ -78,7 +93,202 @@ if (
 // Utilizamos el ID del usuario autenticado.
 const userId = user.id
 
+  if (isTagsRoot && request.method === 'GET') {
+    const tags = db.prepare(`
+      SELECT
+        id,
+        name,
+        created_at AS createdAt
+      FROM tags
+      WHERE user_id = ?
+      ORDER BY name COLLATE NOCASE, id
+    `).all(userId)
+    const assignments = db.prepare(`
+      SELECT
+        user_card_tags.user_card_id AS userCardId,
+        user_card_tags.tag_id AS tagId
+      FROM user_card_tags
+      INNER JOIN tags ON tags.id = user_card_tags.tag_id
+      INNER JOIN user_cards ON user_cards.id = user_card_tags.user_card_id
+      WHERE tags.user_id = ? AND user_cards.user_id = ?
+      ORDER BY user_card_tags.user_card_id, user_card_tags.tag_id
+    `).all(userId, userId)
+
+    return Response.json({ tags, assignments })
+  }
+
+  if (isTagsRoot && request.method === 'POST') {
+    let body: unknown
+
+    try {
+      body = await request.json()
+    } catch {
+      return Response.json({ error: 'JSON inválido' }, { status: 400 })
+    }
+
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return Response.json({ error: 'Datos inválidos' }, { status: 400 })
+    }
+
+    const name = (body as Record<string, unknown>).name
+
+    if (typeof name !== 'string') {
+      return Response.json({ error: 'Nombre de etiqueta inválido' }, { status: 400 })
+    }
+
+    const normalizedName = name.trim().replace(/\s+/g, ' ')
+
+    if (normalizedName.length < 1 || normalizedName.length > 40) {
+      return Response.json({ error: 'Nombre de etiqueta inválido' }, { status: 400 })
+    }
+
+    const existingTags = db.prepare(`
+      SELECT id, name
+      FROM tags
+      WHERE user_id = ?
+    `).all(userId)
+    const duplicate = existingTags.find((tag) =>
+      String(tag.name).localeCompare(normalizedName, undefined, {
+        sensitivity: 'base'
+      }) === 0
+    )
+
+    if (duplicate) {
+      return Response.json({ error: 'La etiqueta ya existe' }, { status: 409 })
+    }
+
+    const result = db.prepare(`
+      INSERT INTO tags (user_id, name)
+      VALUES (?, ?)
+    `).run(userId, normalizedName)
+    const createdTag = db.prepare(`
+      SELECT id, name, created_at AS createdAt
+      FROM tags
+      WHERE id = ? AND user_id = ?
+    `).get(result.lastInsertRowid, userId)
+
+    return Response.json(createdTag, { status: 201 })
+  }
+
+  if (isTagsRoot) {
+    return Response.json(
+      { error: 'Método no permitido' },
+      { status: 405, headers: { Allow: 'GET, POST' } }
+    )
+  }
+
+  if (tagMatch) {
+    const tagId = Number(tagMatch[1])
+
+    if (!Number.isSafeInteger(tagId) || tagId < 1) {
+      return Response.json({ error: 'ID inválido' }, { status: 400 })
+    }
+
+    if (request.method !== 'DELETE') {
+      return Response.json(
+        { error: 'Método no permitido' },
+        { status: 405, headers: { Allow: 'DELETE' } }
+      )
+    }
+
+    const result = db.prepare(`
+      DELETE FROM tags
+      WHERE id = ? AND user_id = ?
+    `).run(tagId, userId)
+
+    if (result.changes === 0) {
+      return Response.json({ error: 'Etiqueta no encontrada' }, { status: 404 })
+    }
+
+    return new Response(null, { status: 204 })
+  }
+
+  if (cardTagMatch) {
+    const userCardId = Number(cardTagMatch[1])
+    const tagId = Number(cardTagMatch[2])
+
+    if (
+      !Number.isSafeInteger(userCardId) ||
+      userCardId < 1 ||
+      !Number.isSafeInteger(tagId) ||
+      tagId < 1
+    ) {
+      return Response.json({ error: 'ID inválido' }, { status: 400 })
+    }
+
+    const ownership = db.prepare(`
+      SELECT user_cards.id
+      FROM user_cards
+      INNER JOIN tags ON tags.id = ?
+      WHERE user_cards.id = ?
+        AND user_cards.user_id = ?
+        AND tags.user_id = ?
+    `).get(tagId, userCardId, userId, userId)
+
+    if (!ownership) {
+      return Response.json(
+        { error: 'Carta o etiqueta no encontrada' },
+        { status: 404 }
+      )
+    }
+
+    if (request.method === 'POST') {
+      db.prepare(`
+        INSERT OR IGNORE INTO user_card_tags (user_card_id, tag_id)
+        VALUES (?, ?)
+      `).run(userCardId, tagId)
+
+      return Response.json({ userCardId, tagId }, { status: 200 })
+    }
+
+    if (request.method === 'DELETE') {
+      db.prepare(`
+        DELETE FROM user_card_tags
+        WHERE user_card_id = ? AND tag_id = ?
+      `).run(userCardId, tagId)
+
+      return new Response(null, { status: 204 })
+    }
+
+    return Response.json(
+      { error: 'Método no permitido' },
+      { status: 405, headers: { Allow: 'POST, DELETE' } }
+    )
+  }
+
   if (isTransactionsRoot && request.method === 'GET') {
+    const requestedPage = Number(url.searchParams.get('page') ?? '1')
+    const transactionType = url.searchParams.get('type') ?? 'all'
+
+    if (
+      !Number.isSafeInteger(requestedPage) ||
+      requestedPage < 1 ||
+      requestedPage > 1_000_000 ||
+      !['all', 'purchase', 'sale'].includes(transactionType)
+    ) {
+      return Response.json(
+        { error: 'Paginación o filtro inválido' },
+        { status: 400 }
+      )
+    }
+
+    const countRow = transactionType === 'all'
+      ? db.prepare(`
+          SELECT COUNT(*) AS total
+          FROM card_transactions
+          WHERE user_id = ?
+        `).get(userId)
+      : db.prepare(`
+          SELECT COUNT(*) AS total
+          FROM card_transactions
+          WHERE user_id = ? AND transaction_type = ?
+        `).get(userId, transactionType)
+    const total = Number(countRow?.total ?? 0)
+    const totalPages = Math.ceil(total / TRANSACTIONS_PAGE_SIZE)
+    const page = totalPages > 0
+      ? Math.min(requestedPage, totalPages)
+      : 1
+    const offset = (page - 1) * TRANSACTIONS_PAGE_SIZE
     const transactions = db.prepare(`
       SELECT
         id,
@@ -92,10 +302,24 @@ const userId = user.id
         quantity * unit_price AS totalPrice
       FROM card_transactions
       WHERE user_id = ?
+        AND (? = 'all' OR transaction_type = ?)
       ORDER BY transaction_date DESC, id DESC
-    `).all(userId)
+      LIMIT ? OFFSET ?
+    `).all(
+      userId,
+      transactionType,
+      transactionType,
+      TRANSACTIONS_PAGE_SIZE,
+      offset
+    )
 
-    return Response.json(transactions)
+    return Response.json({
+      transactions,
+      page,
+      pageSize: TRANSACTIONS_PAGE_SIZE,
+      total,
+      totalPages
+    })
   }
 
   if (isTransactionsRoot && request.method === 'POST') {
@@ -133,6 +357,7 @@ const userId = user.id
       typeof cardId !== 'string' ||
       !cardId.trim() ||
       cardId.length > 100 ||
+      !/^[a-zA-Z0-9._-]+$/.test(cardId.trim()) ||
       (transactionType !== 'purchase' && transactionType !== 'sale') ||
       typeof quantity !== 'number' ||
       !Number.isSafeInteger(quantity) ||
@@ -167,15 +392,26 @@ const userId = user.id
       )
     }
 
-    const ownedCard = db.prepare(`
-      SELECT id
-      FROM user_cards
-      WHERE user_id = ? AND card_id = ?
-    `).get(userId, normalizedCardId)
+    const cardChecks = await Promise.allSettled([
+      getCardFromTcgdex(normalizedCardId, 'es'),
+      getCardFromTcgdex(normalizedCardId, 'en')
+    ])
+    const officialCardExists = cardChecks.some(
+      (result) => result.status === 'fulfilled' && result.value !== null
+    )
 
-    if (!ownedCard) {
+    if (!officialCardExists && cardChecks.some(
+      (result) => result.status === 'rejected'
+    )) {
       return Response.json(
-        { error: 'Carta no encontrada en la colección' },
+        { error: 'No se pudo validar la carta en TCGdex' },
+        { status: 502 }
+      )
+    }
+
+    if (!officialCardExists) {
+      return Response.json(
+        { error: 'Carta oficial no encontrada' },
         { status: 404 }
       )
     }

@@ -19,6 +19,13 @@ type CachedRequest = {
   request: Promise<unknown>
 }
 
+export type CardCatalogFilters = {
+  type?: string
+  rarity?: string
+  setId?: string
+  sort?: 'name-asc' | 'name-desc' | ''
+}
+
 type TcgCardForImage = {
   id: string
   name: string
@@ -97,13 +104,38 @@ function getSupportedLanguage(language: string) {
   return language === 'en' ? 'en' : 'es'
 }
 
+export async function getCardCatalogFiltersFromTcgdex(
+  language: string = 'es'
+) {
+  const supportedLanguage = getSupportedLanguage(language)
+  const [typesResponse, raritiesResponse] = await Promise.all([
+    fetch(`${API_URL}/${supportedLanguage}/types`),
+    fetch(`${API_URL}/${supportedLanguage}/rarities`)
+  ])
+
+  if (!typesResponse.ok || !raritiesResponse.ok) {
+    throw new Error('Error al consultar filtros de TCGdex')
+  }
+
+  const [types, rarities] = await Promise.all([
+    typesResponse.json(),
+    raritiesResponse.json()
+  ])
+
+  return {
+    types: Array.isArray(types) ? types : [],
+    rarities: Array.isArray(rarities) ? rarities : []
+  }
+}
+
 export async function getCardsFromTcgdex(
   search: string = '',
   page: number = 1,
   language: string = 'es',
   localId: string = '',
   exactLocalId: boolean = false,
-  hp: string = ''
+  hp: string = '',
+  filters: CardCatalogFilters = {}
 ) {
   const supportedLanguage = getSupportedLanguage(language)
   const url = new URL(`${API_URL}/${supportedLanguage}/cards`)
@@ -129,6 +161,26 @@ export async function getCardsFromTcgdex(
     url.searchParams.set('hp', `eq:${hp.trim()}`)
   }
 
+  if (filters.type?.trim()) {
+    url.searchParams.set('types', `eq:${filters.type.trim()}`)
+  }
+
+  if (filters.rarity?.trim()) {
+    url.searchParams.set('rarity', `eq:${filters.rarity.trim()}`)
+  }
+
+  if (filters.setId?.trim()) {
+    url.searchParams.set('set.id', `eq:${filters.setId.trim()}`)
+  }
+
+  if (filters.sort) {
+    url.searchParams.set('sort:field', 'name')
+    url.searchParams.set(
+      'sort:order',
+      filters.sort === 'name-desc' ? 'DESC' : 'ASC'
+    )
+  }
+
   const response = await fetch(url)
 
   if (!response.ok) {
@@ -149,13 +201,17 @@ async function pageHasCards(
   search: string,
   page: number,
   language: string,
-  localId: string
+  localId: string,
+  filters: CardCatalogFilters
 ) {
   const cards = await getCardsFromTcgdex(
     search,
     page,
     language,
-    localId
+    localId,
+    false,
+    '',
+    filters
   )
 
   if (!Array.isArray(cards)) {
@@ -168,9 +224,10 @@ async function pageHasCards(
 async function findLastCardsPage(
   search: string,
   language: string,
-  localId: string
+  localId: string,
+  filters: CardCatalogFilters
 ) {
-  if (!await pageHasCards(search, 1, language, localId)) {
+  if (!await pageHasCards(search, 1, language, localId, filters)) {
     return 0
   }
 
@@ -179,7 +236,7 @@ async function findLastCardsPage(
 
   while (
     firstEmptyPage <= MAX_PAGE_PROBE &&
-    await pageHasCards(search, firstEmptyPage, language, localId)
+    await pageHasCards(search, firstEmptyPage, language, localId, filters)
   ) {
     lastKnownPage = firstEmptyPage
     firstEmptyPage *= 2
@@ -194,7 +251,7 @@ async function findLastCardsPage(
       (lastKnownPage + firstEmptyPage) / 2
     )
 
-    if (await pageHasCards(search, middlePage, language, localId)) {
+    if (await pageHasCards(search, middlePage, language, localId, filters)) {
       lastKnownPage = middlePage
     } else {
       firstEmptyPage = middlePage
@@ -207,7 +264,8 @@ async function findLastCardsPage(
 export async function getLastCardsPageFromTcgdex(
   search: string = '',
   language: string = 'es',
-  localId: string = ''
+  localId: string = '',
+  filters: CardCatalogFilters = {}
 ) {
   const supportedLanguage = getSupportedLanguage(language)
   const normalizedSearch = search.trim().toLocaleLowerCase()
@@ -215,7 +273,11 @@ export async function getLastCardsPageFromTcgdex(
   const cacheKey = [
     supportedLanguage,
     normalizedSearch,
-    normalizedLocalId
+    normalizedLocalId,
+    filters.type?.trim().toLocaleLowerCase() ?? '',
+    filters.rarity?.trim().toLocaleLowerCase() ?? '',
+    filters.setId?.trim().toLocaleLowerCase() ?? '',
+    filters.sort ?? ''
   ].join(':')
   const cached = lastPageCache.get(cacheKey)
 
@@ -226,7 +288,8 @@ export async function getLastCardsPageFromTcgdex(
   const request = findLastCardsPage(
     search,
     supportedLanguage,
-    localId
+    localId,
+    filters
   )
 
   lastPageCache.set(cacheKey, {

@@ -58,7 +58,8 @@ export async function getCards(
   language = 'es',
   localId = '',
   exactLocalId = false,
-  hp = ''
+  hp = '',
+  filters = {}
 ) {
   const params = new URLSearchParams()
 
@@ -76,6 +77,10 @@ export async function getCards(
   if (hp.trim()) {
     params.set('hp', hp.trim())
   }
+  if (filters.type?.trim()) params.set('type', filters.type.trim())
+  if (filters.rarity?.trim()) params.set('rarity', filters.rarity.trim())
+  if (filters.setId?.trim()) params.set('setId', filters.setId.trim())
+  if (filters.sort) params.set('sort', filters.sort)
 
   const response = await fetch(`/api/cards?${params.toString()}`)
 
@@ -86,13 +91,21 @@ export async function getCards(
   return response.json()
 }
 
-export async function getLastCardPage(search = '', language = 'es') {
+export async function getLastCardPage(
+  search = '',
+  language = 'es',
+  filters = {}
+) {
   const params = new URLSearchParams()
 
   params.set('lang', language === 'en' ? 'en' : 'es')
   if (search.trim()) {
     params.set('search', search.trim())
   }
+  if (filters.type?.trim()) params.set('type', filters.type.trim())
+  if (filters.rarity?.trim()) params.set('rarity', filters.rarity.trim())
+  if (filters.setId?.trim()) params.set('setId', filters.setId.trim())
+  if (filters.sort) params.set('sort', filters.sort)
 
   const response = await fetch(
     `/api/cards/last-page?${params.toString()}`
@@ -107,6 +120,16 @@ export async function getLastCardPage(search = '', language = 'es') {
   return Number.isInteger(result.lastPage) && result.lastPage >= 0
     ? result.lastPage
     : 0
+}
+
+export async function getCatalogFilterOptions(language = 'es') {
+  const params = new URLSearchParams()
+  params.set('lang', language === 'en' ? 'en' : 'es')
+
+  const response = await fetch(`/api/cards/filters?${params.toString()}`)
+
+  if (!response.ok) throw new Error('No se pudieron obtener los filtros')
+  return response.json()
 }
 
 export async function getCardById(cardId, language = 'es') {
