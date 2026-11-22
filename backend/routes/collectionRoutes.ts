@@ -3,6 +3,9 @@ import { getUserFromSession } from '../services/sessionService.ts'
 import { getCardFromTcgdex } from '../services/tcgdexService.ts'
 
 const TRANSACTIONS_PAGE_SIZE = 20
+const COLLECTION_PAGE_SIZE = 24
+const COLLECTION_MAX_PAGE_SIZE = 50
+const MAX_CARD_QUANTITY = 1_000_000
 
 function isValidTransactionDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -94,6 +97,7 @@ if (
 const userId = user.id
 
   if (isTagsRoot && request.method === 'GET') {
+    const includeAssignments = url.searchParams.get('assignments') !== 'none'
     const tags = db.prepare(`
       SELECT
         id,
@@ -103,16 +107,18 @@ const userId = user.id
       WHERE user_id = ?
       ORDER BY name COLLATE NOCASE, id
     `).all(userId)
-    const assignments = db.prepare(`
-      SELECT
-        user_card_tags.user_card_id AS userCardId,
-        user_card_tags.tag_id AS tagId
-      FROM user_card_tags
-      INNER JOIN tags ON tags.id = user_card_tags.tag_id
-      INNER JOIN user_cards ON user_cards.id = user_card_tags.user_card_id
-      WHERE tags.user_id = ? AND user_cards.user_id = ?
-      ORDER BY user_card_tags.user_card_id, user_card_tags.tag_id
-    `).all(userId, userId)
+    const assignments = includeAssignments
+      ? db.prepare(`
+          SELECT
+            user_card_tags.user_card_id AS userCardId,
+            user_card_tags.tag_id AS tagId
+          FROM user_card_tags
+          INNER JOIN tags ON tags.id = user_card_tags.tag_id
+          INNER JOIN user_cards ON user_cards.id = user_card_tags.user_card_id
+          WHERE tags.user_id = ? AND user_cards.user_id = ?
+          ORDER BY user_card_tags.user_card_id, user_card_tags.tag_id
+        `).all(userId, userId)
+      : []
 
     return Response.json({ tags, assignments })
   }
@@ -467,24 +473,222 @@ const userId = user.id
 
   // GET: consultar la colección
   if (isCollectionRoot && request.method === 'GET') {
-    const cards = db.prepare(`
-      SELECT
-        id,
-        card_id AS cardId,
-        quantity,
-        for_trade AS forTrade,
-        created_at AS createdAt
-      FROM user_cards
-      WHERE user_id = ?
-      ORDER BY id DESC
-    `).all(userId)
+    const summaryOnly = url.searchParams.get('summary') === 'owned'
 
-    return Response.json(
-      cards.map((card) => ({
-        ...card,
-        forTrade: Boolean(card.forTrade)
-      }))
+    if (summaryOnly) {
+      const cards = db.prepare(`
+        SELECT id, card_id AS cardId, quantity, for_trade AS forTrade
+        FROM user_cards
+        WHERE user_id = ?
+        ORDER BY id DESC
+      `).all(userId)
+
+      return Response.json({
+        cards: cards.map((card) => ({
+          ...card,
+          forTrade: Boolean(card.forTrade)
+        })),
+        totalQuantity: cards.reduce(
+          (total, card) => total + Number(card.quantity),
+          0
+        )
+      })
+    }
+
+    // Conservamos el formato anterior para consumidores todavía no paginados.
+    if (!url.searchParams.has('page')) {
+      const cards = db.prepare(`
+        SELECT
+          id,
+          card_id AS cardId,
+          quantity,
+          for_trade AS forTrade,
+          created_at AS createdAt
+        FROM user_cards
+        WHERE user_id = ?
+        ORDER BY id DESC
+      `).all(userId)
+
+      return Response.json(
+        cards.map((card) => ({
+          ...card,
+          forTrade: Boolean(card.forTrade)
+        }))
+      )
+    }
+
+    const requestedPage = Number(url.searchParams.get('page') ?? '1')
+    const requestedPageSize = Number(
+      url.searchParams.get('pageSize') ?? COLLECTION_PAGE_SIZE
     )
+    const language = url.searchParams.get('lang') ?? 'es'
+    const search = (url.searchParams.get('search') ?? '').trim()
+    const rarity = (url.searchParams.get('rarity') ?? '').trim()
+    const setId = (url.searchParams.get('setId') ?? '').trim()
+    const trade = url.searchParams.get('trade') ?? 'all'
+    const tag = url.searchParams.get('tag') ?? 'all'
+    const sort = url.searchParams.get('sort') ?? 'name-asc'
+
+    if (
+      !Number.isSafeInteger(requestedPage) ||
+      requestedPage < 1 ||
+      requestedPage > 1_000_000 ||
+      !Number.isSafeInteger(requestedPageSize) ||
+      requestedPageSize < 1 ||
+      requestedPageSize > COLLECTION_MAX_PAGE_SIZE ||
+      !['es', 'en'].includes(language) ||
+      search.length > 100 ||
+      rarity.length > 100 ||
+      setId.length > 100 ||
+      !['all', 'true'].includes(trade) ||
+      ![
+        'name-asc',
+        'name-desc',
+        'quantity-asc',
+        'quantity-desc',
+        'rarity',
+        'set'
+      ].includes(sort) ||
+      !(
+        tag === 'all' ||
+        tag === 'none' ||
+        (/^\d+$/.test(tag) && Number.isSafeInteger(Number(tag)))
+      )
+    ) {
+      return Response.json(
+        { error: 'Paginación o filtros inválidos' },
+        { status: 400 }
+      )
+    }
+
+    const conditions = ['user_cards.user_id = ?']
+    const parameters: Array<string | number> = [userId]
+
+    if (search) {
+      const escapedSearch = search
+        .toLocaleLowerCase()
+        .replace(/[\\%_]/g, '\\$&')
+      conditions.push(`(
+        lower(COALESCE(card_metadata.name, '')) LIKE ? ESCAPE '\\'
+        OR lower(user_cards.card_id) LIKE ? ESCAPE '\\'
+      )`)
+      parameters.push(`%${escapedSearch}%`, `%${escapedSearch}%`)
+    }
+
+    if (rarity) {
+      conditions.push('card_metadata.rarity = ? COLLATE NOCASE')
+      parameters.push(rarity)
+    }
+
+    if (setId) {
+      conditions.push('card_metadata.set_id = ?')
+      parameters.push(setId)
+    }
+
+    if (trade === 'true') conditions.push('user_cards.for_trade = 1')
+
+    if (tag === 'none') {
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM user_card_tags
+        WHERE user_card_tags.user_card_id = user_cards.id
+      )`)
+    } else if (tag !== 'all') {
+      conditions.push(`EXISTS (
+        SELECT 1
+        FROM user_card_tags
+        INNER JOIN tags ON tags.id = user_card_tags.tag_id
+        WHERE user_card_tags.user_card_id = user_cards.id
+          AND user_card_tags.tag_id = ?
+          AND tags.user_id = user_cards.user_id
+      )`)
+      parameters.push(Number(tag))
+    }
+
+    const whereClause = conditions.join(' AND ')
+    const countRow = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        COALESCE(SUM(user_cards.quantity), 0) AS totalQuantity
+      FROM user_cards
+      LEFT JOIN card_metadata
+        ON card_metadata.card_id = user_cards.card_id
+        AND card_metadata.language = ?
+      WHERE ${whereClause}
+    `).get(language, ...parameters)
+    const total = Number(countRow?.total ?? 0)
+    const totalPages = Math.ceil(total / requestedPageSize)
+    const page = totalPages > 0
+      ? Math.min(requestedPage, totalPages)
+      : 1
+    const offset = (page - 1) * requestedPageSize
+    const orderBy = {
+      'name-asc': "COALESCE(card_metadata.name, user_cards.card_id) COLLATE NOCASE ASC, user_cards.id DESC",
+      'name-desc': "COALESCE(card_metadata.name, user_cards.card_id) COLLATE NOCASE DESC, user_cards.id DESC",
+      'quantity-asc': 'user_cards.quantity ASC, user_cards.id DESC',
+      'quantity-desc': 'user_cards.quantity DESC, user_cards.id DESC',
+      rarity: "COALESCE(card_metadata.rarity, '') COLLATE NOCASE ASC, user_cards.id DESC",
+      set: "COALESCE(card_metadata.set_name, '') COLLATE NOCASE ASC, user_cards.id DESC"
+    }[sort]
+    const rows = db.prepare(`
+      SELECT
+        user_cards.id,
+        user_cards.card_id AS cardId,
+        user_cards.quantity,
+        user_cards.for_trade AS forTrade,
+        user_cards.created_at AS createdAt,
+        card_metadata.details_json AS detailsJson,
+        (
+          SELECT GROUP_CONCAT(user_card_tags.tag_id)
+          FROM user_card_tags
+          INNER JOIN tags ON tags.id = user_card_tags.tag_id
+          WHERE user_card_tags.user_card_id = user_cards.id
+            AND tags.user_id = user_cards.user_id
+        ) AS tagIds
+      FROM user_cards
+      LEFT JOIN card_metadata
+        ON card_metadata.card_id = user_cards.card_id
+        AND card_metadata.language = ?
+      WHERE ${whereClause}
+      ORDER BY ${orderBy}
+      LIMIT ? OFFSET ?
+    `).all(
+      language,
+      ...parameters,
+      requestedPageSize,
+      offset
+    )
+    const cards = rows.map((row) => {
+      let details = null
+
+      if (typeof row.detailsJson === 'string') {
+        try {
+          details = JSON.parse(row.detailsJson)
+        } catch {
+          details = null
+        }
+      }
+
+      return {
+        id: row.id,
+        cardId: row.cardId,
+        quantity: row.quantity,
+        forTrade: Boolean(row.forTrade),
+        createdAt: row.createdAt,
+        details,
+        tagIds: typeof row.tagIds === 'string' && row.tagIds
+          ? row.tagIds.split(',').map(Number)
+          : []
+      }
+    })
+
+    return Response.json({
+      cards,
+      page,
+      pageSize: requestedPageSize,
+      total,
+      totalQuantity: Number(countRow?.totalQuantity ?? 0),
+      totalPages
+    })
   }
 
   // POST: agregar una carta
@@ -521,7 +725,8 @@ const userId = user.id
       cardId.length > 100 ||
       typeof quantity !== 'number' ||
       !Number.isSafeInteger(quantity) ||
-      quantity < 1
+      quantity < 1 ||
+      quantity > MAX_CARD_QUANTITY
     ) {
       return Response.json(
         { error: 'Carta o cantidad inválida' },
@@ -530,6 +735,19 @@ const userId = user.id
     }
 
     const normalizedId = cardId.trim()
+    const existingCard = db.prepare(`
+      SELECT quantity
+      FROM user_cards
+      WHERE user_id = ? AND card_id = ?
+    `).get(userId, normalizedId)
+    const nextQuantity = Number(existingCard?.quantity ?? 0) + quantity
+
+    if (!Number.isSafeInteger(nextQuantity) || nextQuantity > MAX_CARD_QUANTITY) {
+      return Response.json(
+        { error: 'La cantidad total de la carta es demasiado alta' },
+        { status: 400 }
+      )
+    }
 
     db.prepare(`
       INSERT INTO user_cards
@@ -675,11 +893,25 @@ const userId = user.id
       if (
         typeof quantity !== 'number' ||
         !Number.isSafeInteger(quantity) ||
-        quantity < 1
+        quantity < 1 ||
+        quantity > MAX_CARD_QUANTITY
       ) {
         return Response.json(
           { error: 'Cantidad inválida' },
           { status: 400 }
+        )
+      }
+
+      const deckRequirement = db.prepare(`
+        SELECT COALESCE(MAX(quantity), 0) AS minimumQuantity
+        FROM deck_cards
+        WHERE user_card_id = ?
+      `).get(itemId)
+
+      if (quantity < Number(deckRequirement?.minimumQuantity ?? 0)) {
+        return Response.json(
+          { error: 'La cantidad es menor que la utilizada en un mazo' },
+          { status: 409 }
         )
       }
 

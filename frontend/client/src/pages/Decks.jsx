@@ -1,36 +1,128 @@
 import { useEffect, useRef, useState } from 'react'
-import { getDecks, createDeck, getDeckCards, addCardToDeck,
-         updateDeckCardQuantity, removeCardFromDeck, updateDeck, deleteDeck} from '../services/deckService'
-import { getCollection } from '../services/collectionService'
+import { getDecks, createDeck, getDeckCards, syncDeckCards,
+         updateDeck, deleteDeck } from '../services/deckService'
+import { getCollectionPage, getCollectionSummary } from '../services/collectionService'
 import {
   getAlternateCardImage,
+  getCards,
   getCardById,
   getCardImageUrls
 } from '../services/cardService'
 import './Decks.css'
 
-async function getLocalizedCollectionCards(language) {
-  const collection = await getCollection()
+const DECK_COLLECTION_PAGE_SIZE = 24
+const DECK_SEARCH_PAGE_SIZE = 12
 
-  return Promise.all(
-    collection.map(async (item) => {
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index], index)
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(limit, items.length) },
+      () => worker()
+    )
+  )
+
+  return results
+}
+
+async function getLocalizedCollectionCards(
+  language,
+  search = '',
+  page = 1,
+  requiredUserCardIds = [],
+  collectionSummary = null
+) {
+  let candidates
+  let hasMore = false
+
+  if (search.trim()) {
+    const [summary, catalogCards] = await Promise.all([
+      collectionSummary ?? getCollectionSummary(),
+      getCards(search.trim(), page, language)
+    ])
+    const collection = Array.isArray(summary.cards) ? summary.cards : []
+    const ownedById = new Map(collection.map((item) => [item.cardId, item]))
+    candidates = (Array.isArray(catalogCards) ? catalogCards : [])
+      .map((card) => {
+        const owned = ownedById.get(card.id)
+        return owned ? { ...owned, catalogCard: card } : null
+      })
+      .filter(Boolean)
+    hasMore = Array.isArray(catalogCards) &&
+      catalogCards.length >= DECK_SEARCH_PAGE_SIZE
+  } else {
+    const result = await getCollectionPage({
+      page,
+      pageSize: DECK_COLLECTION_PAGE_SIZE,
+      language,
+      sort: 'name-asc'
+    })
+    candidates = Array.isArray(result.cards) ? result.cards : []
+    hasMore = Number.isSafeInteger(result.totalPages) &&
+      page < result.totalPages
+  }
+
+  const requiredIds = new Set(
+    requiredUserCardIds.map((item) => Number(item.userCardId))
+  )
+  const candidateIds = new Set(candidates.map((item) => item.id))
+  for (const item of requiredUserCardIds) {
+    if (requiredIds.has(Number(item.userCardId)) && !candidateIds.has(item.userCardId)) {
+      candidates.push({
+        id: item.userCardId,
+        cardId: item.cardId,
+        quantity: item.ownedQuantity,
+        forTrade: false
+      })
+      candidateIds.add(item.userCardId)
+    }
+  }
+
+  const localized = await mapWithConcurrency(
+    candidates,
+    4,
+    async (item) => {
+      const knownDetails = item.details ?? item.catalogCard
+      if (knownDetails) {
+        return {
+          ...item,
+          displayName: knownDetails.name || item.cardId,
+          image: knownDetails.image || null,
+          details: knownDetails
+        }
+      }
+
       try {
         const details = await getCardById(item.cardId, language)
 
         return {
           ...item,
           displayName: details?.name || item.cardId,
-          image: details?.image || null
+          image: details?.image || null,
+          details: details ?? item.catalogCard ?? null
         }
       } catch {
         return {
           ...item,
-          displayName: item.cardId,
-          image: null
+          displayName: item.catalogCard?.name || item.cardId,
+          image: item.catalogCard?.image || null,
+          details: item.catalogCard ?? null
         }
       }
-    })
+    }
   )
+
+  return { cards: localized, hasMore }
 }
 
 function Decks({ texts, language }) {
@@ -48,9 +140,16 @@ function Decks({ texts, language }) {
   const [activeDeckId, setActiveDeckId] = useState(null)
   // Cartas disponibles en nuestra colección
   const [collectionCards, setCollectionCards] = useState([])
+  const [collectionSearch, setCollectionSearch] = useState('')
+  const [activeCollectionSearch, setActiveCollectionSearch] = useState('')
+  const [collectionPage, setCollectionPage] = useState(1)
+  const [collectionHasMore, setCollectionHasMore] = useState(false)
   const [deckCardImages, setDeckCardImages] = useState({})
   // Cartas que ya están asociadas al mazo
   const [deckCards, setDeckCards] = useState([])
+  const [draftDeckCards, setDraftDeckCards] = useState([])
+  const [deckMode, setDeckMode] = useState('view')
+  const [deckSaving, setDeckSaving] = useState(false)
   // Carta seleccionada en el formulario
   const [selectedUserCardId, setSelectedUserCardId] = useState('')
   // Controlamos la carga y las acciones sobre las cartas
@@ -59,7 +158,6 @@ function Decks({ texts, language }) {
   const [cardsError, setCardsError] = useState(null)
   const [cardsMessage, setCardsMessage] = useState(null)
   // Identifica que carta estamos modificando
-  const [busyCardId, setBusyCardId] = useState(null)
   const [editingDeckId, setEditingDeckId] = useState(null) // Que mazo estamos editando
   // Lo que escrbimos al editar
   const [editName, setEditName] = useState('') 
@@ -67,7 +165,12 @@ function Decks({ texts, language }) {
   const [busyDeckId, setBusyDeckId] = useState(null) // Evita editar o eliminar varias veces mientras guardamos
   const [deckActionError, setDeckActionError] = useState(null) //errores
   const loadedDeckId = useRef(null)
+  const collectionSummaryRef = useRef(null)
+  const requestedDeckMode = useRef('view')
   const imageLanguage = useRef(language)
+  const displayedDeckCards = deckMode === 'manage'
+    ? draftDeckCards
+    : deckCards
 
   useEffect(() => {
     imageLanguage.current = language
@@ -107,6 +210,8 @@ function Decks({ texts, language }) {
   useEffect(() => {
     if (activeDeckId === null) {
       loadedDeckId.current = null
+      collectionSummaryRef.current = null
+      requestedDeckMode.current = 'view'
       return
     }
 
@@ -118,18 +223,30 @@ function Decks({ texts, language }) {
       setCardsError(null)
 
       try {
-        const [completeCollection, savedDeckCards] = await Promise.all([
-          getLocalizedCollectionCards(language),
-          shouldLoadDeckCards
-            ? getDeckCards(activeDeckId)
-            : Promise.resolve(null)
-        ])
+        const savedDeckCards = shouldLoadDeckCards
+          ? await getDeckCards(activeDeckId)
+          : deckCards
+        let collectionSummary = collectionSummaryRef.current
+        if (activeCollectionSearch && !collectionSummary) {
+          collectionSummary = await getCollectionSummary()
+          if (!cancelled) collectionSummaryRef.current = collectionSummary
+        }
+        const collectionResult = await getLocalizedCollectionCards(
+          language,
+          activeCollectionSearch,
+          collectionPage,
+          savedDeckCards,
+          collectionSummary
+        )
 
         if (!cancelled) {
-          setCollectionCards(completeCollection)
+          setCollectionCards(collectionResult.cards)
+          setCollectionHasMore(collectionResult.hasMore)
 
           if (shouldLoadDeckCards) {
             setDeckCards(savedDeckCards)
+            setDraftDeckCards(savedDeckCards)
+            setDeckMode(requestedDeckMode.current)
           }
 
           loadedDeckId.current = activeDeckId
@@ -154,11 +271,17 @@ function Decks({ texts, language }) {
     return () => {
       cancelled = true
     }
-  }, [activeDeckId, language])
+  }, [
+    activeDeckId,
+    activeCollectionSearch,
+    collectionPage,
+    deckCards,
+    language
+  ])
 
   useEffect(() => {
     let cancelled = false
-    const visibleCards = deckCards
+    const visibleCards = displayedDeckCards
       .map((item) =>
         collectionCards.find((card) => card.id === item.userCardId)
       )
@@ -204,7 +327,7 @@ function Decks({ texts, language }) {
     return () => {
       cancelled = true
     }
-  }, [collectionCards, deckCards, language])
+  }, [collectionCards, deckCards, deckMode, displayedDeckCards, draftDeckCards, language])
 
   async function handleDeckImageError(card) {
     const fallbackState = {
@@ -328,35 +451,61 @@ function Decks({ texts, language }) {
   }
 
   // Abre un mazo y carga las cartas de la colección.
-  function handleOpenCards(deckId) {
-    if (cardsLoading || addingCard || busyCardId !== null) return //evita cambiar de mazo mientras estamos cambiando cantidades
+  function handleOpenCards(deckId, requestedMode = 'view') {
+    if (cardsLoading || addingCard || deckSaving) return //evita cambiar de mazo mientras estamos cambiando cantidades
 
     // Si presionamos el mismo mazo, cerramos su panel.
     if (activeDeckId === deckId) {
-      setActiveDeckId(null)
+      if (requestedMode === 'manage') {
+        handleStartManage()
+        return
+      }
+
+      if (deckMode === 'view') {
+        setActiveDeckId(null)
+        setDraftDeckCards([])
+        setDeckMode('view')
+        return
+      }
+
+      if (deckMode === 'manage' && deckDraftDirty &&
+        !window.confirm(texts.decks.confirmDiscardChanges)) {
+        return
+      }
+      setDraftDeckCards(deckCards.map((card) => ({ ...card })))
+      setDeckMode('view')
       return
     }
 
+    requestedDeckMode.current = requestedMode
     setActiveDeckId(deckId)
+    collectionSummaryRef.current = null
     setCardsLoading(true)
     setCardsError(null)
     setCardsMessage(null)
     setSelectedUserCardId('')
     setDeckCards([])
+    setDraftDeckCards([])
+    setDeckMode(requestedMode)
+    setCollectionSearch('')
+    setActiveCollectionSearch('')
+    setCollectionPage(1)
   }
 
   // Agrega la carta seleccionada al mazo.
-  async function handleAddCard(event) {
+  function handleAddCard(event) {
     event.preventDefault()
 
-    if (addingCard || activeDeckId === null) return
+    if (addingCard || activeDeckId === null || deckMode !== 'manage') return
 
     const userCardId = Number(selectedUserCardId)
+
+    const selectedCard = collectionCards.find((card) => card.id === userCardId)
 
     if (
       !Number.isSafeInteger(userCardId) ||
       userCardId < 1 ||
-      !collectionCards.some((card) => card.id === userCardId)
+      !selectedCard
     ) {
       setCardsError({ type: 'translation', key: 'invalidCard' })
       return
@@ -366,26 +515,23 @@ function Decks({ texts, language }) {
     setCardsError(null)
     setCardsMessage(null)
 
-    try {
-      // Pedimos a Deno asociar la carta con el mazo.
-      await addCardToDeck(activeDeckId, userCardId)
-
-      // Consultamos el mazo actualizado.
-      const updatedCards = await getDeckCards(activeDeckId)
-
-      setDeckCards(updatedCards)
-      setSelectedUserCardId('')
-      setCardsMessage({ type: 'translation', key: 'cardAdded' })
-    } catch (error) {
-      setCardsError({ type: 'service', value: error.message, fallback: 'addCardError' })
-    } finally {
-      setAddingCard(false)
-    }
+    setDraftDeckCards((current) => [
+      ...current,
+      {
+        userCardId,
+        cardId: selectedCard.cardId,
+        quantity: 1,
+        ownedQuantity: selectedCard.quantity
+      }
+    ])
+    setSelectedUserCardId('')
+    setCardsMessage({ type: 'translation', key: 'draftCardAdded' })
+    setAddingCard(false)
   }
 
   // Aumenta o disminuye la cantidad dentro del mazo.
-  async function handleChangeDeckQuantity(item, change) {
-    if (busyCardId !== null || activeDeckId === null) return
+  function handleChangeDeckQuantity(item, change) {
+    if (deckSaving || activeDeckId === null || deckMode !== 'manage') return
 
     // Calculamos la nueva cantidad.
     const newQuantity = item.quantity + change
@@ -398,36 +544,20 @@ function Decks({ texts, language }) {
       return
     }
 
-    setBusyCardId(item.userCardId)
     setCardsError(null)
     setCardsMessage(null)
-
-    try {
-      // Guardamos la nueva cantidad en SQLite.
-      const updated = await updateDeckCardQuantity(
-        activeDeckId,
-        item.userCardId,
-        newQuantity
+    setDraftDeckCards((current) =>
+      current.map((card) =>
+        card.userCardId === item.userCardId
+          ? { ...card, quantity: newQuantity }
+          : card
       )
-
-      // Actualizamos solamente la carta modificada en React.
-      setDeckCards((current) =>
-        current.map((card) =>
-          card.userCardId === item.userCardId
-            ? { ...card, quantity: updated.quantity }
-            : card
-        )
-      )
-    } catch (error) {
-      setCardsError({ type: 'service', value: error.message, fallback: 'quantityError' })
-    } finally {
-      setBusyCardId(null)
-    }
+    )
   }
 
   // Quita completamente una carta del mazo.
-  async function handleRemoveDeckCard(item) {
-    if (busyCardId !== null || activeDeckId === null) return
+  function handleRemoveDeckCard(item) {
+    if (deckSaving || activeDeckId === null || deckMode !== 'manage') return
 
     const card = collectionCards.find(
       (saved) => saved.id === item.userCardId
@@ -437,29 +567,61 @@ function Decks({ texts, language }) {
 
     if (!confirmed) return
 
-    setBusyCardId(item.userCardId)
+    setCardsError(null)
+    setCardsMessage(null)
+    setDraftDeckCards((current) =>
+      current.filter((card) => card.userCardId !== item.userCardId)
+    )
+    setCardsMessage({ type: 'translation', key: 'draftCardRemoved' })
+  }
+
+  function handleStartManage() {
+    if (cardsLoading || deckSaving || deckMode === 'manage') return
+    setDraftDeckCards(deckCards.map((card) => ({ ...card })))
+    setDeckMode('manage')
+    setCardsError(null)
+    setCardsMessage(null)
+  }
+
+  function handleCancelDeckChanges() {
+    if (deckDraftDirty && !window.confirm(texts.decks.confirmDiscardChanges)) {
+      return
+    }
+
+    setDraftDeckCards(deckCards.map((card) => ({ ...card })))
+    setDeckMode('view')
+    setCardsError(null)
+    setCardsMessage({ type: 'translation', key: 'changesDiscarded' })
+  }
+
+  async function handleSaveDeckCards() {
+    if (activeDeckId === null || deckSaving || !deckDraftDirty) return
+
+    setDeckSaving(true)
     setCardsError(null)
     setCardsMessage(null)
 
     try {
-      // Eliminamos la relación en SQLite.
-      await removeCardFromDeck(
+      const savedCards = await syncDeckCards(
         activeDeckId,
-        item.userCardId
+        draftDeckCards.map(({ userCardId, quantity }) => ({
+          userCardId,
+          quantity
+        }))
       )
 
-      // Quitamos la carta de la lista visual.
-      setDeckCards((current) =>
-        current.filter(
-          (card) => card.userCardId !== item.userCardId
-        )
-      )
-
-      setCardsMessage({ type: 'translation', key: 'cardRemoved' })
+      setDeckCards(savedCards)
+      setDraftDeckCards(savedCards.map((card) => ({ ...card })))
+      setDeckMode('view')
+      setCardsMessage({ type: 'translation', key: 'deckCardsUpdated' })
     } catch (error) {
-      setCardsError({ type: 'service', value: error.message, fallback: 'removeCardError' })
+      setCardsError({
+        type: 'service',
+        value: error.message,
+        fallback: 'deckCardsUpdateError'
+      })
     } finally {
-      setBusyCardId(null)
+      setDeckSaving(false)
     }
   }
 
@@ -536,7 +698,9 @@ async function handleDeleteDeck(deck) {
     if (activeDeckId === deck.id) {
       setActiveDeckId(null)
       setDeckCards([])
+      setDraftDeckCards([])
       setCollectionCards([])
+      setDeckMode('view')
     }
 
     if (editingDeckId === deck.id) {
@@ -549,12 +713,26 @@ async function handleDeleteDeck(deck) {
   } finally {
     setBusyDeckId(null)
   }
+
 }
 
   // Mostramos solo las cartas que todavía no están en el mazo.
+  function handleCollectionSearch(event) {
+    event.preventDefault()
+    setCollectionPage(1)
+    setActiveCollectionSearch(collectionSearch.trim())
+  }
+
+  const deckDraftDirty = draftDeckCards.length !== deckCards.length ||
+    draftDeckCards.some((draftCard) => {
+      const savedCard = deckCards.find(
+        (card) => card.userCardId === draftCard.userCardId
+      )
+      return !savedCard || savedCard.quantity !== draftCard.quantity
+    })
   const availableCards = collectionCards.filter(
     (card) =>
-      !deckCards.some(
+      !displayedDeckCards.some(
         (savedCard) => savedCard.userCardId === card.id
       )
   )
@@ -707,8 +885,9 @@ async function handleDeleteDeck(deck) {
                         disabled={
                           busyDeckId !== null ||
                           cardsLoading ||
+                          deckSaving ||
                           addingCard ||
-                          busyCardId !== null
+                          deckSaving
                         }
                         onClick={() => handleStartEdit(deck)}
                       >
@@ -721,8 +900,9 @@ async function handleDeleteDeck(deck) {
                         disabled={
                           busyDeckId !== null ||
                           cardsLoading ||
+                          deckSaving ||
                           addingCard ||
-                          busyCardId !== null
+                          deckSaving
                         }
                         onClick={() => handleDeleteDeck(deck)}
                       >
@@ -733,15 +913,24 @@ async function handleDeleteDeck(deck) {
                     </div>
                   )}
 
-                  <button
-                    type="button"
-                    disabled={cardsLoading || addingCard}
-                    onClick={() => handleOpenCards(deck.id)}
-                  >
-                    {activeDeckId === deck.id
-                      ? texts.decks.closeCards
-                      : texts.decks.manageCards}
-                  </button>
+                  <div className="deck-card-actions">
+                    <button
+                      type="button"
+                      disabled={cardsLoading || addingCard || deckSaving}
+                      onClick={() => handleOpenCards(deck.id, 'view')}
+                    >
+                      {activeDeckId === deck.id && deckMode === 'view'
+                        ? texts.decks.closeCards
+                        : texts.decks.viewCards}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={cardsLoading || addingCard || deckSaving}
+                      onClick={() => handleOpenCards(deck.id, 'manage')}
+                    >
+                      {texts.decks.manageCards}
+                    </button>
+                  </div>
                   {activeDeckId === deck.id && (
                     <div className="deck-cards-panel">
 
@@ -759,10 +948,47 @@ async function handleDeleteDeck(deck) {
 
                       {!cardsLoading && (
                         <>
+                          {deckMode === 'manage' && (
+                            <>
                           <h5>{texts.decks.addCardTitle}</h5>
 
+                          <form
+                            className="deck-card-search"
+                            onSubmit={handleCollectionSearch}
+                          >
+                            <label htmlFor={`deck-card-search-${deck.id}`}>
+                              {texts.decks.searchCollection}
+                            </label>
+                            <input
+                              id={`deck-card-search-${deck.id}`}
+                              type="search"
+                              value={collectionSearch}
+                              onChange={(event) => setCollectionSearch(event.target.value)}
+                              placeholder={texts.decks.searchCollectionPlaceholder}
+                            />
+                            <button type="submit" disabled={cardsLoading}>
+                              {texts.decks.searchCollectionButton}
+                            </button>
+                            {activeCollectionSearch && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCollectionSearch('')
+                                  setActiveCollectionSearch('')
+                                  setCollectionPage(1)
+                                }}
+                              >
+                                {texts.decks.clearCollectionSearch}
+                              </button>
+                            )}
+                          </form>
+
                           {collectionCards.length === 0 ? (
-                            <p>{texts.decks.collectionEmpty}</p>
+                            <p>
+                              {activeCollectionSearch
+                                ? texts.decks.noSearchResults
+                                : texts.decks.collectionEmpty}
+                            </p>
                           ) : availableCards.length === 0 ? (
                             <p>{texts.decks.allCardsAdded}</p>
                           ) : (
@@ -797,14 +1023,43 @@ async function handleDeleteDeck(deck) {
                             </form>
                           )}
 
-                          <h5>{texts.decks.deckCardsTitle(deckCards.length)}</h5>
+                          {(collectionPage > 1 || collectionHasMore) && (
+                            <nav
+                              className="transaction-pagination"
+                              aria-label={texts.decks.searchCollection}
+                            >
+                              <button
+                                type="button"
+                                disabled={cardsLoading || collectionPage <= 1}
+                                onClick={() => setCollectionPage((current) =>
+                                  Math.max(1, current - 1)
+                                )}
+                              >
+                                {texts.decks.previous}
+                              </button>
+                              <span>{texts.decks.pageOf(collectionPage)}</span>
+                              <button
+                                type="button"
+                                disabled={cardsLoading || !collectionHasMore}
+                                onClick={() => setCollectionPage((current) => current + 1)}
+                              >
+                                {texts.decks.next}
+                              </button>
+                            </nav>
+                          )}
+                            </>
+                          )}
 
-                          {deckCards.length === 0 ? (
+                          <h5>{texts.decks.deckCardsTitle(displayedDeckCards.length)}</h5>
+
+                          {displayedDeckCards.length === 0 ? (
                             <p>{texts.decks.deckEmpty}</p>
                           ) : (
 
-                          <div className="deck-card-list">
-                            {deckCards.map((item) => {
+                          <div className={deckMode === 'view'
+                            ? 'deck-card-gallery'
+                            : 'deck-card-list'}>
+                            {displayedDeckCards.map((item) => {
                               // Buscamos la información visual de esta carta.
                               const card = collectionCards.find(
                                 (saved) => saved.id === item.userCardId
@@ -817,18 +1072,24 @@ async function handleDeleteDeck(deck) {
                               const imageUrl = imageState
                                 ? imageState.urls[imageState.index] ?? null
                                 : getCardImageUrls(card?.image)[0] ?? null
+                              const displayName = card?.displayName || item.cardId
 
                               return (
-                                <div className="deck-card-row" key={item.userCardId}>
+                                <div
+                                  className={deckMode === 'view'
+                                    ? 'deck-gallery-card'
+                                    : 'deck-card-row'}
+                                  key={item.userCardId}
+                                >
 
                                   {/* Imagen obtenida desde TCGdex. */}
                                   {imageUrl && !imageState?.unavailable ? (
                                     <img
                                       src={imageUrl}
-                                      alt={texts.decks.cardImageAlt(card.displayName)}
+                                      alt={texts.decks.cardImageAlt(displayName)}
                                       className="deck-card-image"
                                       loading="lazy"
-                                      onError={() => handleDeckImageError(card)}
+                                      onError={() => card && handleDeckImageError(card)}
                                     />
                                   ) : (
                                     <div className="deck-card-image-placeholder">
@@ -838,19 +1099,22 @@ async function handleDeleteDeck(deck) {
 
                                   <div className="deck-card-info">
                                     <strong>
-                                      {card?.displayName || item.cardId}
+                                      {displayName}
                                     </strong>
 
                                     <small>
-                                      {texts.decks.ownedQuantity(item.ownedQuantity)}
+                                      {deckMode === 'view'
+                                        ? texts.decks.deckQuantity(item.quantity)
+                                        : texts.decks.ownedQuantity(item.ownedQuantity)}
                                     </small>
 
+                                    {deckMode === 'manage' && (
                                     <div className="deck-card-controls">
                                       <button
                                         type="button"
-                                        aria-label={texts.decks.decreaseQuantity(card?.displayName || item.cardId)}
+                                        aria-label={texts.decks.decreaseQuantity(displayName)}
                                         disabled={
-                                          busyCardId !== null ||
+                                          deckSaving ||
                                           item.quantity <= 1
                                         }
                                         onClick={() =>
@@ -864,9 +1128,9 @@ async function handleDeleteDeck(deck) {
 
                                       <button
                                         type="button"
-                                        aria-label={texts.decks.increaseQuantity(card?.displayName || item.cardId)}
+                                        aria-label={texts.decks.increaseQuantity(displayName)}
                                         disabled={
-                                          busyCardId !== null ||
+                                          deckSaving ||
                                           item.quantity >= item.ownedQuantity
                                         }
                                         onClick={() =>
@@ -876,22 +1140,46 @@ async function handleDeleteDeck(deck) {
                                         +
                                       </button>
                                     </div>
+                                    )}
                                   </div>
 
+                                  {deckMode === 'manage' && (
                                   <button
                                     type="button"
                                     className="remove-deck-card-button"
-                                    aria-label={texts.decks.removeCard(card?.displayName || item.cardId)}
-                                    disabled={busyCardId !== null}
+                                    aria-label={texts.decks.removeCard(displayName)}
+                                    disabled={deckSaving}
                                     onClick={() => handleRemoveDeckCard(item)}
                                   >
                                     ✕
                                   </button>
+                                  )}
                                 </div>
                               )
                             })}
                           </div>
 
+                          )}
+
+                          {deckMode === 'manage' && (
+                            <div className="deck-draft-actions">
+                              <button
+                                type="button"
+                                onClick={handleSaveDeckCards}
+                                disabled={deckSaving || !deckDraftDirty}
+                              >
+                                {deckSaving
+                                  ? texts.decks.saving
+                                  : texts.decks.updateDeckCards}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleCancelDeckChanges}
+                                disabled={deckSaving}
+                              >
+                                {texts.decks.cancel}
+                              </button>
+                            </div>
                           )}
                         </>
                       )}

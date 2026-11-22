@@ -468,11 +468,19 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
+  width: 100%;
+  box-sizing: border-box;
   gap: 7px;
+  margin: 0 0 10px;
+  padding: 0 2px;
 }
 
 .tag-chip,
 .card-tag-chips span {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
   padding: 4px 9px;
   border-radius: 999px;
   background: #f4d9dc;
@@ -1366,6 +1374,17 @@
   .tag-manager form > .tag-emoji-picker {
     align-items: center;
     flex-direction: row;
+  }
+
+  .card-tag-chips {
+    gap: 4px;
+    margin-bottom: 7px;
+    padding: 0;
+  }
+
+  .card-tag-chips span {
+    padding: 3px 7px;
+    font-size: 12px;
   }
 
   .photo-identification-heading,

@@ -62,6 +62,32 @@ export async function getDeckCards(deckId) {
 }
 
 // Agrega al mazo una carta que ya existe en nuestra colección.
+// Guarda de una vez el borrador completo de un mazo.
+export async function syncDeckCards(deckId, cards) {
+  const response = await fetch(`/api/decks/${deckId}/cards/sync`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ cards })
+  })
+
+  if (response.status === 400 || response.status === 409) {
+    const body = await response.json().catch(() => ({}))
+    const error = new Error(body.error || 'No se pudo actualizar el mazo.')
+    error.status = response.status
+    throw error
+  }
+
+  if (!response.ok) {
+    throw new Error('No se pudo actualizar el mazo.')
+  }
+
+  return response.json()
+}
+
+// Agrega al mazo una carta del inventario.
 export async function addCardToDeck(deckId, userCardId) {
   const response = await fetch(
     `/api/decks/${deckId}/cards`,

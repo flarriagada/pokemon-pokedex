@@ -87,6 +87,26 @@
   border-top: 1px solid #ddd;
 }
 
+.deck-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.deck-draft-actions button,
+.deck-card-actions button {
+  flex: 1;
+  min-width: 130px;
+}
+
+.deck-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
 .deck-cards-panel form {
   display: flex;
   flex-direction: column;
@@ -103,6 +123,36 @@
 
 .deck-card-list {
   padding-left: 20px;
+}
+
+.deck-card-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 14px;
+  margin-top: 15px;
+}
+
+.deck-gallery-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  background-color: #fff;
+  text-align: center;
+}
+
+.deck-gallery-card .deck-card-image,
+.deck-gallery-card .deck-card-image-placeholder {
+  width: 100%;
+  max-width: 150px;
+}
+
+.deck-gallery-card .deck-card-info {
+  align-items: center;
 }
 
 .deck-card-list li {

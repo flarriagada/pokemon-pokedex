@@ -20,12 +20,16 @@ export async function handleDeckRequest(
     /^\/api\/decks\/(\d+)\/cards$/ //Cartas del mazo 
   )
 
+  const deckCardsSyncMatch = url.pathname.match(
+    /^\/api\/decks\/(\d+)\/cards\/sync$/
+  )
+
   const deckCardItemMatch = url.pathname.match(
     /^\/api\/decks\/(\d+)\/cards\/(\d+)$/
   )
 
   //la funcion reconoce solicitudes con las cartas de cada mazo
-  if (!isDecksRoot && !deckMatch && !deckCardsMatch &&
+  if (!isDecksRoot && !deckMatch && !deckCardsMatch && !deckCardsSyncMatch &&
   !deckCardItemMatch) {
     return null
   }
@@ -211,6 +215,177 @@ if (request.method === 'PATCH') {
 
     // HTTP 204 indica que la eliminación fue exitosa.
     return new Response(null, { status: 204 })
+  }
+
+
+  // Reemplaza el borrador completo del mazo dentro de una sola transacciÃ³n.
+  if (deckCardsSyncMatch) {
+    const deckId = Number(deckCardsSyncMatch[1])
+
+    if (!Number.isSafeInteger(deckId) || deckId < 1) {
+      return Response.json(
+        { error: 'ID de mazo invÃ¡lido' },
+        { status: 400 }
+      )
+    }
+
+    if (
+      request.method !== 'POST' ||
+      request.headers.get('Origin') !== 'http://localhost:5173'
+    ) {
+      return Response.json(
+        { error: 'MÃ©todo u origen no permitido' },
+        {
+          status: request.method === 'POST' ? 403 : 405,
+          headers: { Allow: 'POST' }
+        }
+      )
+    }
+
+    const deck = db.prepare(`
+      SELECT id FROM decks
+      WHERE id = ? AND user_id = ?
+    `).get(deckId, userId)
+
+    if (!deck) {
+      return Response.json(
+        { error: 'Mazo no encontrado' },
+        { status: 404 }
+      )
+    }
+
+    let body: unknown
+
+    try {
+      body = await request.json()
+    } catch {
+      return Response.json(
+        { error: 'JSON invÃ¡lido' },
+        { status: 400 }
+      )
+    }
+
+    const bodyRecord = body !== null &&
+      typeof body === 'object' &&
+      !Array.isArray(body)
+      ? body as Record<string, unknown>
+      : null
+
+    if (
+      !bodyRecord ||
+      !Array.isArray(bodyRecord.cards) ||
+      bodyRecord.cards.length > 1000
+    ) {
+      return Response.json(
+        { error: 'Cartas del mazo invÃ¡lidas' },
+        { status: 400 }
+      )
+    }
+
+    const cards = bodyRecord.cards as unknown[]
+    const normalizedCards: Array<{ userCardId: number; quantity: number }> = []
+    const seenCardIds = new Set<number>()
+
+    for (const value of cards) {
+      if (
+        value === null ||
+        typeof value !== 'object' ||
+        Array.isArray(value)
+      ) {
+        return Response.json(
+          { error: 'Cartas del mazo invÃ¡lidas' },
+          { status: 400 }
+        )
+      }
+
+      const card = value as Record<string, unknown>
+      const userCardId = card.userCardId
+      const quantity = card.quantity
+
+      if (
+        typeof userCardId !== 'number' ||
+        !Number.isSafeInteger(userCardId) ||
+        userCardId < 1 ||
+        typeof quantity !== 'number' ||
+        !Number.isSafeInteger(quantity) ||
+        quantity < 1 ||
+        seenCardIds.has(userCardId)
+      ) {
+        return Response.json(
+          { error: 'Cartas del mazo invÃ¡lidas' },
+          { status: 400 }
+        )
+      }
+
+      seenCardIds.add(userCardId)
+      normalizedCards.push({ userCardId, quantity })
+    }
+
+    const userCardIds = normalizedCards.map((card) => card.userCardId)
+    const ownedCards = userCardIds.length === 0
+      ? []
+      : db.prepare(`
+          SELECT id, quantity
+          FROM user_cards
+          WHERE user_id = ? AND id IN (${userCardIds.map(() => '?').join(',')})
+        `).all(userId, ...userCardIds)
+    const ownedById = new Map(
+      ownedCards.map((card) => [Number(card.id), Number(card.quantity)])
+    )
+
+    for (const card of normalizedCards) {
+      const ownedQuantity = ownedById.get(card.userCardId)
+
+      if (ownedQuantity === undefined || card.quantity > ownedQuantity) {
+        return Response.json(
+          { error: 'No tienes suficientes cartas en tu colecciÃ³n' },
+          { status: 400 }
+        )
+      }
+    }
+
+    try {
+      db.exec('BEGIN IMMEDIATE')
+      db.prepare('DELETE FROM deck_cards WHERE deck_id = ?').run(deckId)
+
+      for (const card of normalizedCards) {
+        db.prepare(`
+          INSERT INTO deck_cards (deck_id, user_card_id, quantity)
+          VALUES (?, ?, ?)
+        `).run(deckId, card.userCardId, card.quantity)
+      }
+
+      db.exec('COMMIT')
+    } catch {
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        // La transacciÃ³n ya pudo haberse cerrado al informar el error.
+      }
+
+      return Response.json(
+        { error: 'No se pudo actualizar el mazo' },
+        { status: 500 }
+      )
+    }
+
+    const savedCards = db.prepare(`
+      SELECT
+        user_cards.id AS userCardId,
+        user_cards.card_id AS cardId,
+        deck_cards.quantity AS quantity,
+        user_cards.quantity AS ownedQuantity
+      FROM deck_cards
+      INNER JOIN user_cards
+        ON deck_cards.user_card_id = user_cards.id
+      WHERE deck_cards.deck_id = ?
+        AND user_cards.user_id = ?
+      ORDER BY user_cards.id DESC
+    `).all(deckId, userId)
+
+    return Response.json(savedCards, {
+      headers: { 'Cache-Control': 'no-store' }
+    })
   }
 
 

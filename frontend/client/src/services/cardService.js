@@ -1,5 +1,6 @@
 
 const alternateImageCache = new Map()
+const cardDetailsRequests = new Map()
 
 export function getCardImageUrls(image) {
   if (typeof image !== 'string' || !image.trim()) return []
@@ -133,23 +134,41 @@ export async function getCatalogFilterOptions(language = 'es') {
 }
 
 export async function getCardById(cardId, language = 'es') {
+  const currentLanguage = language === 'en' ? 'en' : 'es'
+  const cacheKey = `${currentLanguage}:${cardId}`
+  const pending = cardDetailsRequests.get(cacheKey)
+
+  if (pending) return pending
+
   const params = new URLSearchParams()
 
-  params.set('lang', language === 'en' ? 'en' : 'es')
+  params.set('lang', currentLanguage)
 
-  const response = await fetch(
-    `/api/cards/${encodeURIComponent(cardId)}?${params.toString()}`
-  )
+  const request = (async () => {
+    const response = await fetch(
+      `/api/cards/${encodeURIComponent(cardId)}?${params.toString()}`
+    )
 
-  if (response.status === 404) {
-    return null
+    if (response.status === 404) {
+      return null
+    }
+
+    if (!response.ok) {
+      throw new Error('No se pudieron obtener los detalles')
+    }
+
+    return response.json()
+  })()
+
+  cardDetailsRequests.set(cacheKey, request)
+
+  try {
+    return await request
+  } finally {
+    if (cardDetailsRequests.get(cacheKey) === request) {
+      cardDetailsRequests.delete(cacheKey)
+    }
   }
-
-  if (!response.ok) {
-    throw new Error('No se pudieron obtener los detalles')
-  }
-
-  return response.json()
 }
 
 export async function getSets(language = 'es', search = '') {

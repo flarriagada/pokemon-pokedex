@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { getCollection, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard, getTransactions, createTransaction, getTags, createTag, deleteTag, assignTagToCard, removeTagFromCard } from '../services/collectionService'
+import { getCollectionPage, getCollectionSummary, addCardToCollection, updateCollectionQuantity, updateCardTradeStatus, deleteCollectionCard, getTransactions, createTransaction, getTags, createTag, deleteTag, assignTagToCard, removeTagFromCard } from '../services/collectionService'
 import {
   getAlternateCardImage,
   getCards,
   getCardById,
   getCardImageUrls,
-  getLastCardPage,
   getSets,
   getSetById
 } from '../services/cardService'
@@ -19,6 +18,7 @@ const PHOTO_MAX_PIXELS = 20_000_000
 const PHOTO_MIN_CARD_WIDTH = 150
 const PHOTO_MIN_CARD_HEIGHT = 205
 const VISUAL_MATCH_CONCURRENCY = 4
+const COLLECTION_DETAILS_CONCURRENCY = 4
 const ALL_MISSING_PAGE_SIZE = 18
 const ALL_MISSING_MAX_SCAN_ROUNDS = 10
 const TAG_EMOJIS = ['❤️', '⭐', '💰', '🃏', '🔥', '⚡', '💧', '🌿', '💎', '🏆']
@@ -26,6 +26,16 @@ const PHOTO_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/webp'
+])
+const OCR_NAME_NOISE = new Set([
+  'basic',
+  'basico',
+  'fase',
+  'go',
+  'pokemon',
+  'promo',
+  'stage',
+  'tcg'
 ])
 const visualFingerprintCache = new Map()
 
@@ -58,6 +68,52 @@ function cleanDetectedCardName(value) {
     .replace(/^(?:es|is)\s+(?=[A-ZÁÉÍÓÚÑ])/u, '')
     .replace(/^[^\p{L}\d]+|[^\p{L}\d'’&:.-]+$/gu, '')
     .trim()
+}
+
+function removeOcrNameNoise(value) {
+  return String(value ?? '')
+    .split(/\s+/)
+    .filter((token) => !OCR_NAME_NOISE.has(normalizeMatchValue(token)))
+    .join(' ')
+    .trim()
+}
+
+function isUsableDetectedName(value) {
+  const cleaned = removeOcrNameNoise(value)
+  const normalized = normalizeMatchValue(cleaned)
+  const letters = cleaned.match(/\p{L}/gu) ?? []
+
+  return letters.length >= 3 &&
+    !OCR_NAME_NOISE.has(normalized) &&
+    !/^(?:hp|ps|pv)$/i.test(cleaned)
+}
+
+function getDetectedNameVariations(value) {
+  const cleaned = removeOcrNameNoise(cleanDetectedCardName(value))
+  if (!isUsableDetectedName(cleaned)) return []
+
+  const withoutOcrPrefix = cleaned.replace(
+    /^(?:[a-z]{1,2}[.\s]+){1,2}(?=\p{Lu})/u,
+    ''
+  )
+  const joinedNames = withoutOcrPrefix.match(
+    /^([\p{L}\d.'’:-]+(?:\s+[\p{L}\d.'’:-]+){0,2}\s*(?:&|and|y)\s*[\p{L}\d.'’:-]+)/iu
+  )?.[1]
+  const throughVariant = withoutOcrPrefix.match(
+    /^(.+?\b(?:VSTAR|VMAX|V-UNION|GX|EX|V)\b)/i
+  )?.[1]
+  const withoutTrailingStats = withoutOcrPrefix.replace(
+    /\s+(?:[A-Z]{2,5}\s+)?(?:HP|PS|PV|[uo0]{1,2})?\s*\d{1,3}\s*$/i,
+    ''
+  )
+
+  return [...new Set([
+    cleaned,
+    withoutOcrPrefix,
+    joinedNames,
+    throughVariant,
+    withoutTrailingStats
+  ].filter((name) => name && isUsableDetectedName(name)))]
 }
 
 function normalizeCollectionToken(value) {
@@ -157,22 +213,21 @@ function selectBestCollectionNumber(values) {
     })[0] ?? { number: '', total: '' }
 }
 
-function extractTopCardName(text) {
-  const candidates = String(text ?? '')
+function extractTopCardNames(text) {
+  return String(text ?? '')
     .split(/\r?\n/)
-    .map(cleanDetectedCardName)
+    .flatMap((line) => getDetectedNameVariations(line))
     .filter((line) => {
       const letters = line.match(/\p{L}/gu) ?? []
 
       return line.length >= 2 &&
         line.length <= 50 &&
         letters.length >= 2 &&
+        isUsableDetectedName(line) &&
         !isMetadataLine(line) &&
         !line.includes('/') &&
         !/^\d+$/u.test(line)
     })
-
-  return selectBestDetectedName(candidates)
 }
 
 function getCollectionNumberQuery(value) {
@@ -209,11 +264,12 @@ function extractOcrFields(text) {
     .slice(0, 15)
     .map((line, index) => {
       const hasHp = /\b(?:\d{1,3}\s*(?:HP|PS)|(?:HP|PS)\s*\d{1,3})\b/i.test(line)
-      const cleaned = cleanDetectedCardName(line)
+      const cleaned = removeOcrNameNoise(cleanDetectedCardName(line))
       const letters = (cleaned.match(/\p{L}/gu) ?? []).length
       const valid = cleaned.length >= 2 &&
         cleaned.length <= 50 &&
         letters >= 2 &&
+        isUsableDetectedName(cleaned) &&
         !isMetadataLine(cleaned) &&
         !/^[\d\W_]+$/u.test(cleaned) &&
         !cleaned.includes('/')
@@ -262,6 +318,8 @@ function extractSpecializedHp(text) {
 
 function scoreDetectedName(value) {
   const name = String(value ?? '').trim()
+  if (!isUsableDetectedName(name)) return -100
+
   const letters = name.match(/\p{L}/gu) ?? []
   const tokens = name.split(/\s+/).filter(Boolean)
   const shortUppercaseTokens = tokens.filter((token) =>
@@ -269,7 +327,7 @@ function scoreDetectedName(value) {
   ).length
 
   return letters.length * 2 +
-    (tokens.length === 1 ? 12 : 0) -
+    (tokens.length === 1 && letters.length >= 3 ? 12 : 0) -
     shortUppercaseTokens * 6 -
     (name.match(/\d/g) ?? []).length * 5
 }
@@ -291,12 +349,34 @@ function getPhotoNameQueries(value) {
   const longestWord = [...usefulWords].sort(
     (first, second) => second.length - first.length
   )[0] ?? ''
-  const queries = [name, ...usefulWords]
+  const joinedName = usefulWords.length >= 2
+    ? `${usefulWords[0]} ${usefulWords[1]}`
+    : ''
+  const queries = [name, joinedName, ...usefulWords]
 
   if (longestWord.length >= 4) queries.push(longestWord)
   if (longestWord.length >= 5) queries.push(longestWord.slice(0, 4))
 
   return [...new Set(queries.filter((query) => query.length >= 2))]
+}
+
+function getPhotoNameAlternatives(fields) {
+  return [...new Set([
+    fields.name,
+    ...(Array.isArray(fields.nameAlternatives) ? fields.nameAlternatives : [])
+  ].flatMap((name) => getDetectedNameVariations(name)))]
+}
+
+function getBestPhotoFieldsForCard(card, fields) {
+  const alternatives = getPhotoNameAlternatives(fields)
+  if (alternatives.length === 0) return fields
+
+  return alternatives
+    .map((name) => ({ ...fields, name }))
+    .sort(
+      (first, second) =>
+        scorePhotoCandidate(card, second) - scorePhotoCandidate(card, first)
+    )[0]
 }
 
 function scorePhotoCandidate(card, fields) {
@@ -614,7 +694,15 @@ function createProcessedPhotoRegion(
   image,
   cardBounds,
   region,
-  { scale = 2.5, contrast = 1.35, binary = false } = {}
+  {
+    scale = 2.5,
+    contrast = 1.35,
+    binary = false,
+    adaptive = false,
+    sharpen = false,
+    channel = 'luminance',
+    invert = false
+  } = {}
 ) {
   const sourceX = cardBounds.x + cardBounds.width * region.x
   const sourceY = cardBounds.y + cardBounds.height * region.y
@@ -647,31 +735,124 @@ function createProcessedPhotoRegion(
   )
   const imageData = context.getImageData(0, 0, width, height)
   const grayscale = new Uint8Array(width * height)
-  let totalLuminance = 0
+  const histogram = new Uint32Array(256)
 
   for (let index = 0; index < grayscale.length; index += 1) {
     const offset = index * 4
-    const value = Math.round(
-      imageData.data[offset] * 0.299 +
-      imageData.data[offset + 1] * 0.587 +
-      imageData.data[offset + 2] * 0.114
-    )
+    const red = imageData.data[offset]
+    const green = imageData.data[offset + 1]
+    const blue = imageData.data[offset + 2]
+    let value
+
+    if (channel === 'red') value = red
+    else if (channel === 'green') value = green
+    else if (channel === 'blue') value = blue
+    else if (channel === 'max') value = Math.max(red, green, blue)
+    else {
+      value = Math.round(red * 0.299 + green * 0.587 + blue * 0.114)
+    }
     const adjusted = Math.max(
       0,
       Math.min(255, Math.round((value - 128) * contrast + 128))
     )
 
     grayscale[index] = adjusted
-    totalLuminance += adjusted
+    histogram[adjusted] += 1
   }
 
-  const threshold = totalLuminance / grayscale.length
+  if (sharpen && width > 2 && height > 2) {
+    const source = grayscale.slice()
+
+    for (let y = 1; y < height - 1; y += 1) {
+      for (let x = 1; x < width - 1; x += 1) {
+        const index = y * width + x
+        const value = source[index] * 5 -
+          source[index - 1] -
+          source[index + 1] -
+          source[index - width] -
+          source[index + width]
+
+        grayscale[index] = Math.max(0, Math.min(255, value))
+      }
+    }
+  }
+
+  let threshold = 128
+
+  if (binary) {
+    let total = 0
+    let weightedTotal = 0
+    let backgroundWeight = 0
+    let backgroundSum = 0
+    let bestVariance = -1
+
+    for (let value = 0; value < histogram.length; value += 1) {
+      total += histogram[value]
+      weightedTotal += value * histogram[value]
+    }
+
+    for (let value = 0; value < histogram.length; value += 1) {
+      backgroundWeight += histogram[value]
+      if (backgroundWeight === 0) continue
+
+      const foregroundWeight = total - backgroundWeight
+      if (foregroundWeight === 0) break
+
+      backgroundSum += value * histogram[value]
+      const backgroundMean = backgroundSum / backgroundWeight
+      const foregroundMean =
+        (weightedTotal - backgroundSum) / foregroundWeight
+      const variance = backgroundWeight * foregroundWeight *
+        (backgroundMean - foregroundMean) ** 2
+
+      if (variance > bestVariance) {
+        bestVariance = variance
+        threshold = value
+      }
+    }
+  }
+
+  let integral = null
+  if (adaptive) {
+    integral = new Float64Array((width + 1) * (height + 1))
+
+    for (let y = 1; y <= height; y += 1) {
+      let rowSum = 0
+      for (let x = 1; x <= width; x += 1) {
+        rowSum += grayscale[(y - 1) * width + x - 1]
+        integral[y * (width + 1) + x] =
+          integral[(y - 1) * (width + 1) + x] + rowSum
+      }
+    }
+  }
+
+  const adaptiveRadius = Math.max(8, Math.round(Math.min(width, height) * 0.12))
 
   for (let index = 0; index < grayscale.length; index += 1) {
     const offset = index * 4
-    const value = binary
-      ? (grayscale[index] >= threshold ? 255 : 0)
-      : grayscale[index]
+    let value = grayscale[index]
+
+    if (adaptive && integral) {
+      const x = index % width
+      const y = Math.floor(index / width)
+      const left = Math.max(0, x - adaptiveRadius)
+      const right = Math.min(width - 1, x + adaptiveRadius)
+      const top = Math.max(0, y - adaptiveRadius)
+      const bottom = Math.min(height - 1, y + adaptiveRadius)
+      const stride = width + 1
+      const area = (right - left + 1) * (bottom - top + 1)
+      const localSum = integral[(bottom + 1) * stride + right + 1] -
+        integral[top * stride + right + 1] -
+        integral[(bottom + 1) * stride + left] +
+        integral[top * stride + left]
+      const localMean = localSum / area
+
+      value = value >= localMean - 8 ? 255 : 0
+    } else if (binary) {
+      value = value >= threshold ? 255 : 0
+    }
+
+    if (invert) value = 255 - value
 
     imageData.data[offset] = value
     imageData.data[offset + 1] = value
@@ -1056,6 +1237,13 @@ function formatTransactionDate(value, language) {
 
 function Collection({ texts, language, view = 'collection' }) {
   const [cards, setCards] = useState([])
+  const [collectionPage, setCollectionPage] = useState(1)
+  const [collectionTotalPages, setCollectionTotalPages] = useState(0)
+  const [collectionTotal, setCollectionTotal] = useState(0)
+  const [collectionOverallTotal, setCollectionOverallTotal] = useState(null)
+  const [collectionTotalQuantity, setCollectionTotalQuantity] = useState(0)
+  const [collectionSummaryIds, setCollectionSummaryIds] = useState([])
+  const [collectionRefresh, setCollectionRefresh] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState(null)
@@ -1124,7 +1312,7 @@ function Collection({ texts, language, view = 'collection' }) {
   const [transactionActiveSearch, setTransactionActiveSearch] = useState('')
   const [transactionSearchResults, setTransactionSearchResults] = useState([])
   const [transactionSearchPage, setTransactionSearchPage] = useState(1)
-  const [transactionSearchLastPage, setTransactionSearchLastPage] = useState(0)
+  const [transactionSearchHasMore, setTransactionSearchHasMore] = useState(false)
   const [transactionSearchRefresh, setTransactionSearchRefresh] = useState(0)
   const [transactionSearching, setTransactionSearching] = useState(false)
   const [transactionSearchError, setTransactionSearchError] = useState(false)
@@ -1148,6 +1336,7 @@ function Collection({ texts, language, view = 'collection' }) {
   const [photoError, setPhotoError] = useState('')
   const [photoFields, setPhotoFields] = useState({
     name: '',
+    nameAlternatives: [],
     number: '',
     total: '',
     hp: '',
@@ -1171,8 +1360,11 @@ function Collection({ texts, language, view = 'collection' }) {
   const photoPanelOpenRef = useRef(false)
   const automaticPhotoCrop = useRef(null)
   const allMissingRunId = useRef(0)
-  const ownedIdsSignature = cards
-    .map((card) => card.cardId)
+  const collectionLoadId = useRef(0)
+  const collectionRequest = useRef(null)
+  const collectionSummaryRequest = useRef(null)
+  const collectionRevision = useRef(0)
+  const ownedIdsSignature = [...collectionSummaryIds]
     .sort()
     .join('|')
 
@@ -1200,52 +1392,108 @@ function Collection({ texts, language, view = 'collection' }) {
 
 
   useEffect(() => {
+    if (view !== 'collection') return
+
+    const loadId = collectionLoadId.current + 1
+    const revision = collectionRevision.current
+    collectionLoadId.current = loadId
     let cancelled = false
+    const query = {
+      page: collectionPage,
+      pageSize: 24,
+      language,
+      search: collectionSearch,
+      rarity: collectionRarityFilter === 'all' ? '' : collectionRarityFilter,
+      setId: collectionSetFilter === 'all' ? '' : collectionSetFilter,
+      trade: activeCollectionTab === 'trade' ? 'true' : 'all',
+      tag: collectionTagFilter,
+      sort: collectionSort
+    }
+    const requestKey = JSON.stringify(query)
 
     async function loadCollection() {
       setLoading(true)
       setError('')
 
       try {
-        const result = await getCollection()
+        const pending = collectionRequest.current?.key === requestKey
+          ? collectionRequest.current.promise
+          : getCollectionPage(query)
+        collectionRequest.current = { key: requestKey, promise: pending }
+        let savedCards
 
-        if (!cancelled) {
-          setCards(result)
+        try {
+          savedCards = await pending
+        } finally {
+          if (collectionRequest.current?.promise === pending) {
+            collectionRequest.current = null
+          }
         }
 
-        const savedCards = await getCollection()
+        if (cancelled || collectionLoadId.current !== loadId) return
 
-        const completeCards = await Promise.all(
-          savedCards.map(async (item) => {
-            try {
-              const details = await getCardById(item.cardId, language)
-
-              return {
-                ...item,
-                details
-              }
-            } catch {
-              return {
-                ...item,
-                details: null
-              }
+        if (collectionRevision.current === revision) {
+          const pageCards = Array.isArray(savedCards?.cards)
+            ? savedCards.cards
+            : []
+          setCards(pageCards)
+          setCardTagIds((current) => {
+            const next = { ...current }
+            for (const item of pageCards) {
+              next[String(item.id)] = Array.isArray(item.tagIds)
+                ? item.tagIds
+                : []
             }
+            return next
           })
-        )
-
-        if (!cancelled) {
-          setCards(completeCards)
+          setCollectionTotal(
+            Number.isSafeInteger(savedCards?.total) ? savedCards.total : 0
+          )
+          setCollectionTotalPages(
+            Number.isSafeInteger(savedCards?.totalPages)
+              ? savedCards.totalPages
+              : 0
+          )
+          if (Number.isSafeInteger(savedCards?.page)) {
+            setCollectionPage(savedCards.page)
+          }
         }
+        setLoading(false)
 
+        await mapWithConcurrency(
+          Array.isArray(savedCards?.cards) ? savedCards.cards : [],
+          COLLECTION_DETAILS_CONCURRENCY,
+          async (item) => {
+            if (item.details) return
+
+            let details
+
+            try {
+              details = await getCardById(item.cardId, language)
+            } catch {
+              details = null
+            }
+
+            if (
+              cancelled ||
+              collectionLoadId.current !== loadId ||
+              collectionRevision.current !== revision
+            ) return
+
+            setCards((current) => current.map((card) =>
+              card.id === item.id && card.cardId === item.cardId
+                ? { ...card, details }
+                : card
+            ))
+          }
+        )
       } catch (error) {
-        if (!cancelled) {
-          setCards([])
+        if (!cancelled && collectionLoadId.current === loadId) {
+          if (collectionRevision.current === revision) setCards([])
           setError(error.message)
         }
-      } 
-      
-      finally {
-        if (!cancelled) {
+      } finally {
+        if (!cancelled && collectionLoadId.current === loadId) {
           setLoading(false)
         }
       }
@@ -1255,8 +1503,74 @@ function Collection({ texts, language, view = 'collection' }) {
 
     return () => {
       cancelled = true
+      if (collectionLoadId.current === loadId) {
+        collectionLoadId.current += 1
+      }
     }
-  }, [language])
+  }, [
+    activeCollectionTab,
+    collectionPage,
+    collectionRarityFilter,
+    collectionSearch,
+    collectionSetFilter,
+    collectionSort,
+    collectionTagFilter,
+    language,
+    collectionRefresh,
+    view
+  ])
+
+  useEffect(() => {
+    if (view !== 'collection') return
+
+    let cancelled = false
+
+    async function loadCollectionSummary() {
+      try {
+        const pending = collectionSummaryRequest.current?.key === collectionRefresh
+          ? collectionSummaryRequest.current.promise
+          : getCollectionSummary()
+        collectionSummaryRequest.current = {
+          key: collectionRefresh,
+          promise: pending
+        }
+        let result
+
+        try {
+          result = await pending
+        } finally {
+          if (collectionSummaryRequest.current?.promise === pending) {
+            collectionSummaryRequest.current = null
+          }
+        }
+
+        if (cancelled) return
+
+        const summaryCards = Array.isArray(result.cards) ? result.cards : []
+        setCollectionSummaryIds(summaryCards.map((card) => card.cardId))
+        setCollectionOverallTotal(summaryCards.length)
+        setCollectionTotalQuantity(
+          Number.isSafeInteger(result.totalQuantity)
+            ? result.totalQuantity
+            : summaryCards.reduce(
+                (total, card) => total + Number(card.quantity ?? 0),
+                0
+              )
+        )
+      } catch {
+        if (!cancelled) {
+          setCollectionSummaryIds([])
+          setCollectionOverallTotal(0)
+        }
+      }
+    }
+
+    void loadCollectionSummary()
+
+    return () => {
+      cancelled = true
+    }
+  }, [collectionRefresh, view])
 
   useEffect(() => {
     let cancelled = false
@@ -1266,7 +1580,7 @@ function Collection({ texts, language, view = 'collection' }) {
       setTagsError(false)
 
       try {
-        const result = await getTags()
+        const result = await getTags({ includeAssignments: false })
 
         if (cancelled) return
 
@@ -1531,48 +1845,21 @@ function Collection({ texts, language, view = 'collection' }) {
 
       try {
         const languages = language === 'en' ? ['en', 'es'] : ['es', 'en']
-        const [cardRequests, lastPageRequests] = await Promise.all([
-          Promise.allSettled(
-            languages.map((candidateLanguage) =>
-              getCards(
-                transactionActiveSearch,
-                transactionSearchPage,
-                candidateLanguage
-              )
-            )
-          ),
-          Promise.allSettled(
-            languages.map((candidateLanguage) =>
-              getLastCardPage(transactionActiveSearch, candidateLanguage)
+        const cardRequests = await Promise.allSettled(
+          languages.map((candidateLanguage) =>
+            getCards(
+              transactionActiveSearch,
+              transactionSearchPage,
+              candidateLanguage
             )
           )
-        ])
+        )
         const fulfilledCards = cardRequests.filter(
           (result) => result.status === 'fulfilled'
         )
 
         if (fulfilledCards.length === 0) {
           throw new Error('Catálogo no disponible')
-        }
-
-        const lastPageCandidates = languages.map((_, index) => {
-          const exactPage = lastPageRequests[index]
-          if (exactPage.status === 'fulfilled') return exactPage.value
-
-          const pageResult = cardRequests[index]
-          if (pageResult.status !== 'fulfilled' || !Array.isArray(pageResult.value)) {
-            return 0
-          }
-
-          if (pageResult.value.length >= 12) return transactionSearchPage + 1
-          if (pageResult.value.length > 0) return transactionSearchPage
-          return 0
-        })
-        const lastPage = Math.max(0, ...lastPageCandidates)
-
-        if (lastPage > 0 && transactionSearchPage > lastPage) {
-          if (!cancelled) setTransactionSearchPage(lastPage)
-          return
         }
 
         const cardsById = new Map()
@@ -1590,27 +1877,18 @@ function Collection({ texts, language, view = 'collection' }) {
           }
         })
 
-        const detailedResults = await mapWithConcurrency(
-          [...cardsById.values()],
-          VISUAL_MATCH_CONCURRENCY,
-          async (card) => {
-            try {
-              const details = await getCardById(card.id, card.sourceLanguage)
-              return { ...card, ...details, sourceLanguage: card.sourceLanguage }
-            } catch {
-              return card
-            }
-          }
-        )
-
         if (cancelled) return
 
-        setTransactionSearchResults(detailedResults)
-        setTransactionSearchLastPage(lastPage)
+        setTransactionSearchResults([...cardsById.values()])
+        setTransactionSearchHasMore(
+          fulfilledCards.some((result) =>
+            Array.isArray(result.value) && result.value.length >= 12
+          )
+        )
       } catch {
         if (!cancelled) {
           setTransactionSearchResults([])
-          setTransactionSearchLastPage(0)
+          setTransactionSearchHasMore(false)
           setTransactionSearchError(true)
         }
       } finally {
@@ -1960,6 +2238,7 @@ function Collection({ texts, language, view = 'collection' }) {
   function resetPhotoResults() {
     setPhotoFields({
       name: '',
+      nameAlternatives: [],
       number: '',
       total: '',
       hp: '',
@@ -2197,7 +2476,11 @@ function Collection({ texts, language, view = 'collection' }) {
       processing
     )
 
-    await worker.setParameters(parameters)
+    await worker.setParameters({
+      user_defined_dpi: '300',
+      preserve_interword_spaces: '1',
+      ...parameters
+    })
     const result = await worker.recognize(canvas)
     return result.data.text ?? ''
   }
@@ -2214,8 +2497,8 @@ function Collection({ texts, language, view = 'collection' }) {
       }
 
       const nameRegions = [
-        { x: 0.12, y: 0.025, width: 0.64, height: 0.095 },
-        { x: 0.07, y: 0.055, width: 0.72, height: 0.105 }
+        { x: 0.1, y: 0.02, width: 0.74, height: 0.105 },
+        { x: 0.055, y: 0.045, width: 0.86, height: 0.115 }
       ]
       const nameCandidates = []
 
@@ -2225,7 +2508,7 @@ function Collection({ texts, language, view = 'collection' }) {
           loadedImage.image,
           cardBounds,
           nameRegion,
-          { scale: 8, contrast: 1.45 },
+          { scale: 8, contrast: 1.5, sharpen: true },
           {
             tessedit_pageseg_mode: '7',
             tessedit_char_whitelist: ''
@@ -2233,29 +2516,73 @@ function Collection({ texts, language, view = 'collection' }) {
         )
 
         if (photoRunId.current !== runId) return null
-        nameCandidates.push(extractTopCardName(topText))
+        const regionCandidates = extractTopCardNames(topText)
+        nameCandidates.push(...regionCandidates)
 
-        if (scoreDetectedName(nameCandidates.at(-1)) < 18) {
+        if (
+          regionCandidates.length === 0 ||
+          Math.max(...regionCandidates.map(scoreDetectedName)) < 28
+        ) {
           const binaryTopText = await recognizePhotoRegion(
             worker,
             loadedImage.image,
             cardBounds,
             nameRegion,
-            { scale: 8, contrast: 1.3, binary: true },
+            { scale: 8, contrast: 1.15, adaptive: true, sharpen: true },
             {
-              tessedit_pageseg_mode: '13',
+              tessedit_pageseg_mode: '7',
               tessedit_char_whitelist: ''
             }
           )
 
           if (photoRunId.current !== runId) return null
-          nameCandidates.push(extractTopCardName(binaryTopText))
+          nameCandidates.push(...extractTopCardNames(binaryTopText))
         }
       }
 
       let name = selectBestDetectedName(nameCandidates)
 
-      if (!name) {
+      if (scoreDetectedName(name) < 24) {
+        const foilNameRegion = {
+          x: 0.08,
+          y: 0.018,
+          width: 0.66,
+          height: 0.12
+        }
+        const foilProcessingOptions = [
+          { channel: 'red', invert: false },
+          { channel: 'green', invert: false },
+          { channel: 'blue', invert: false },
+          { channel: 'max', invert: true }
+        ]
+
+        for (const processing of foilProcessingOptions) {
+          const foilText = await recognizePhotoRegion(
+            worker,
+            loadedImage.image,
+            cardBounds,
+            foilNameRegion,
+            {
+              scale: 8,
+              contrast: 1.15,
+              adaptive: true,
+              sharpen: true,
+              ...processing
+            },
+            {
+              tessedit_pageseg_mode: '7',
+              tessedit_char_whitelist: ''
+            }
+          )
+
+          if (photoRunId.current !== runId) return null
+          nameCandidates.push(...extractTopCardNames(foilText))
+        }
+
+        name = selectBestDetectedName(nameCandidates)
+      }
+
+      if (scoreDetectedName(name) < 18) {
         const broadTopText = await recognizePhotoRegion(
           worker,
           loadedImage.image,
@@ -2269,7 +2596,8 @@ function Collection({ texts, language, view = 'collection' }) {
         )
 
         if (photoRunId.current !== runId) return null
-        name = extractTopCardName(broadTopText)
+        nameCandidates.push(...extractTopCardNames(broadTopText))
+        name = selectBestDetectedName(nameCandidates)
       }
 
       const hpText = await recognizePhotoRegion(
@@ -2329,7 +2657,41 @@ function Collection({ texts, language, view = 'collection' }) {
         if (numberData.number && numberData.total) break
       }
 
-      const numberData = selectBestCollectionNumber(numberCandidates)
+      let numberData = selectBestCollectionNumber(numberCandidates)
+      let hp = extractSpecializedHp(hpText)
+
+      if (scoreDetectedName(name) < 18) {
+        const fullCardText = await recognizePhotoRegion(
+          worker,
+          loadedImage.image,
+          cardBounds,
+          { x: 0.015, y: 0.01, width: 0.97, height: 0.98 },
+          { scale: 3, contrast: 1.35, sharpen: true },
+          {
+            tessedit_pageseg_mode: '11',
+            tessedit_char_whitelist: ''
+          }
+        )
+
+        if (photoRunId.current !== runId) return null
+
+        const fullCardFields = extractOcrFields(fullCardText)
+        nameCandidates.push(
+          ...getDetectedNameVariations(fullCardFields.name)
+        )
+        name = selectBestDetectedName(nameCandidates)
+        hp ||= fullCardFields.hp
+        numberData = selectBestCollectionNumber([
+          ...numberCandidates,
+          {
+            number: fullCardFields.number,
+            total: fullCardFields.total
+          }
+        ])
+      }
+
+      if (scoreDetectedName(name) < 18) name = ''
+
       const visualFingerprint = createCardVisualFingerprint(
         loadedImage.image,
         cardBounds
@@ -2337,9 +2699,15 @@ function Collection({ texts, language, view = 'collection' }) {
 
       return {
         name,
+        nameAlternatives: [...new Set(nameCandidates)]
+          .filter((candidate) => scoreDetectedName(candidate) >= 18)
+          .sort((first, second) =>
+            scoreDetectedName(second) - scoreDetectedName(first)
+          )
+          .slice(0, 8),
         number: numberData.number,
         total: numberData.total,
-        hp: extractSpecializedHp(hpText),
+        hp,
         expansion: '',
         illustrator: '',
         visualFingerprint
@@ -2446,6 +2814,11 @@ function Collection({ texts, language, view = 'collection' }) {
     ])
     const normalizedFields = {
       name: cleanDetectedCardName(fields.name),
+      nameAlternatives: Array.isArray(fields.nameAlternatives)
+        ? fields.nameAlternatives
+            .flatMap((name) => getDetectedNameVariations(name))
+            .slice(0, 8)
+        : [],
       number: numberFromField.number || getCollectionNumberQuery(fields.number),
       total: fields.total.trim() || numberFromField.total,
       hp: fields.hp.trim(),
@@ -2476,7 +2849,10 @@ function Collection({ texts, language, view = 'collection' }) {
 
     try {
       const candidatesById = new Map()
-      const nameQueries = getPhotoNameQueries(normalizedFields.name)
+      const nameQueries = [...new Set(
+        getPhotoNameAlternatives(normalizedFields)
+          .flatMap((name) => getPhotoNameQueries(name))
+      )].slice(0, 10)
       const requests = new Map()
       const requestCards = (name, number, exactLocalId = false) => {
         const key = [
@@ -2504,8 +2880,13 @@ function Collection({ texts, language, view = 'collection' }) {
 
           if (
             !current ||
-            scorePhotoCandidate(candidate, normalizedFields) >
-              scorePhotoCandidate(current, normalizedFields)
+            scorePhotoCandidate(
+              candidate,
+              getBestPhotoFieldsForCard(candidate, normalizedFields)
+            ) > scorePhotoCandidate(
+              current,
+              getBestPhotoFieldsForCard(current, normalizedFields)
+            )
           ) {
             candidatesById.set(candidate.id, candidate)
           }
@@ -2520,8 +2901,8 @@ function Collection({ texts, language, view = 'collection' }) {
         : await requestCards(nameQueries[0] ?? normalizedFields.name, '')
       addCandidates(primaryCandidates)
 
-      for (const nameQuery of nameQueries.slice(1)) {
-        if (candidatesById.size >= 4) break
+      for (const [index, nameQuery] of nameQueries.slice(1).entries()) {
+        if (index >= 5 || (index >= 2 && candidatesById.size >= 12)) break
 
         addCandidates(await requestCards(
           nameQuery,
@@ -2573,8 +2954,13 @@ function Collection({ texts, language, view = 'collection' }) {
       const basicCandidates = [...candidatesById.values()]
         .sort(
           (a, b) =>
-            scorePhotoCandidate(b, normalizedFields) -
-            scorePhotoCandidate(a, normalizedFields)
+            scorePhotoCandidate(
+              b,
+              getBestPhotoFieldsForCard(b, normalizedFields)
+            ) - scorePhotoCandidate(
+              a,
+              getBestPhotoFieldsForCard(a, normalizedFields)
+            )
         )
         .slice(0, 16)
       const detailedCandidates = await Promise.all(
@@ -2625,14 +3011,21 @@ function Collection({ texts, language, view = 'collection' }) {
       if (photoRunId.current !== runId) return
 
       const rankedCandidates = candidatesWithVisual
-        .map(({ card, visualSimilarity }) => ({
-          card,
-          evidence: getPhotoCandidateEvidence(
+        .map(({ card, visualSimilarity }) => {
+          const candidateFields = getBestPhotoFieldsForCard(
             card,
-            normalizedFields,
-            visualSimilarity
+            normalizedFields
           )
-        }))
+
+          return {
+            card,
+            evidence: getPhotoCandidateEvidence(
+              card,
+              candidateFields,
+              visualSimilarity
+            )
+          }
+        })
         .filter((candidate) => candidate.evidence.plausible)
         .sort((a, b) => b.evidence.score - a.evidence.score)
         .slice(0, 8)
@@ -2657,6 +3050,12 @@ function Collection({ texts, language, view = 'collection' }) {
 
       setPhotoResults(sortedCandidates)
       setPhotoImageStates({})
+      if (hasReliableMatch && strongestCandidate?.card.name) {
+        setPhotoFields((current) => ({
+          ...current,
+          name: strongestCandidate.card.name
+        }))
+      }
       setPhotoError(sortedCandidates.length === 0 ? 'noMatches' : '')
       setPhotoPhase('idle')
       setPhotoStep(
@@ -2771,6 +3170,8 @@ function Collection({ texts, language, view = 'collection' }) {
     try {
       const savedCard = await addCardToCollection(selectedCard.id, quantity)
 
+      collectionRevision.current += 1
+      setCollectionRefresh((current) => current + 1)
       setCards((current) => {
         const existingCard = current.find(
           (item) => item.cardId === selectedCard.id
@@ -2817,6 +3218,10 @@ async function handleQuantityChange(item, newQuantity) {
       newQuantity
     )
 
+    collectionRevision.current += 1
+    setCollectionTotalQuantity((current) =>
+      Math.max(0, current + updated.quantity - item.quantity)
+    )
     setCards((current) =>
       current.map((card) =>
         card.id === item.id
@@ -2928,6 +3333,8 @@ async function handleDelete(item) {
   try {
     await deleteCollectionCard(item.id)
 
+    collectionRevision.current += 1
+    setCollectionRefresh((current) => current + 1)
     setCards((current) =>
       current.filter((card) => card.id !== item.id)
     )
@@ -2947,6 +3354,7 @@ async function handleTradeChange(item, forTrade) {
   try {
     const updated = await updateCardTradeStatus(item.id, forTrade)
 
+    collectionRevision.current += 1
     setCards((current) =>
       current.map((card) =>
         card.id === item.id
@@ -3004,6 +3412,8 @@ async function handleAddDirectCard(card) {
   try {
     const savedCard = await addCardToCollection(card.id, 1)
 
+    collectionRevision.current += 1
+    setCollectionRefresh((current) => current + 1)
     setCards((current) => {
       const existingCard = current.find((item) => item.cardId === card.id)
 
@@ -3041,6 +3451,8 @@ async function handleAddMissingCard(card) {
   try {
     const savedCard = await addCardToCollection(card.id, 1)
 
+    collectionRevision.current += 1
+    setCollectionRefresh((current) => current + 1)
     setCards((current) => {
       const existingCard = current.find(
         (item) => item.cardId === card.id
@@ -3230,7 +3642,7 @@ async function handleTransactionSubmit(event) {
     setTransactionActiveSearch('')
     setTransactionSearchResults([])
     setTransactionSearchPage(1)
-    setTransactionSearchLastPage(0)
+    setTransactionSearchHasMore(false)
     setTransactionHasSearched(false)
     setTransactionType('purchase')
     setTransactionQuantity('1')
@@ -3251,10 +3663,10 @@ async function handleTransactionSubmit(event) {
   }
 }
 
-  const totalCards = cards.reduce(
-    (total, card) => total + card.quantity,
-    0
-  )
+  const totalCards = collectionTotalQuantity
+  const collectionHasCards = collectionOverallTotal === null
+    ? collectionTotal > 0
+    : collectionOverallTotal > 0
   const collectionCollator = new Intl.Collator(language, {
     sensitivity: 'base',
     numeric: true
@@ -3273,75 +3685,15 @@ async function handleTransactionSubmit(event) {
   ).values()].sort((first, second) =>
     collectionCollator.compare(first.name, second.name)
   )
-  const normalizedCollectionSearch = normalizeMatchValue(collectionSearch)
   const filteredCollectionCards = cards
-    .filter((card) => {
-      const details = card.details ?? {}
-      const setValue = details.set?.id || details.set?.name || ''
-      const tagIds = cardTagIds[String(card.id)] ?? []
-
-      return (
-        !normalizedCollectionSearch ||
-        normalizeMatchValue(details.name).includes(normalizedCollectionSearch)
-      ) && (
-        collectionTagFilter === 'all' ||
-        (
-          collectionTagFilter === 'none'
-            ? tagIds.length === 0
-            : tagIds.includes(Number(collectionTagFilter))
-        )
-      ) && (
-        collectionRarityFilter === 'all' ||
-        details.rarity === collectionRarityFilter
-      ) && (
-        collectionSetFilter === 'all' ||
-        setValue === collectionSetFilter
-      )
-    })
-    .sort((first, second) => {
-      const firstDetails = first.details ?? {}
-      const secondDetails = second.details ?? {}
-
-      if (collectionSort === 'name-desc') {
-        return collectionCollator.compare(
-          secondDetails.name ?? '',
-          firstDetails.name ?? ''
-        )
-      }
-      if (collectionSort === 'quantity-desc') {
-        return second.quantity - first.quantity
-      }
-      if (collectionSort === 'quantity-asc') {
-        return first.quantity - second.quantity
-      }
-      if (collectionSort === 'rarity') {
-        return collectionCollator.compare(
-          firstDetails.rarity ?? '',
-          secondDetails.rarity ?? ''
-        )
-      }
-      if (collectionSort === 'set') {
-        return collectionCollator.compare(
-          firstDetails.set?.name ?? '',
-          secondDetails.set?.name ?? ''
-        )
-      }
-
-      return collectionCollator.compare(
-        firstDetails.name ?? '',
-        secondDetails.name ?? ''
-      )
-    })
-  const visibleCards = activeCollectionTab === 'trade'
-    ? cards.filter((card) => card.forTrade)
-    : filteredCollectionCards
+  const visibleCards = filteredCollectionCards
   const currentAllMissingCards = allMissingPages[allMissingPageIndex] ?? []
   const canLoadMoreMissing = allMissingPageIndex < allMissingPages.length - 1 ||
     allMissingPending.length > 0 ||
     !allMissingExhausted.es ||
     !allMissingExhausted.en
   const ownedCardIds = new Set(
-    cards.map((card) => card.cardId)
+    collectionSummaryIds
   )
   const officialSetCards = Array.isArray(setDetails?.cards)
     ? setDetails.cards.filter(
@@ -3401,6 +3753,7 @@ async function handleTransactionSubmit(event) {
               aria-selected={activeCollectionTab === tab}
               onClick={() => {
                 setActiveCollectionTab(tab)
+                setCollectionPage(1)
                 if (tab !== 'cards') {
                   setAddCardPanelOpen(false)
                   handleClosePhotoPanel()
@@ -3712,6 +4065,7 @@ async function handleTransactionSubmit(event) {
                     </button>
                   </div>
                 )}
+
               </>
             )}
 
@@ -3787,7 +4141,8 @@ async function handleTransactionSubmit(event) {
                   onChange={(event) =>
                     setPhotoFields((current) => ({
                       ...current,
-                      name: event.target.value
+                      name: event.target.value,
+                      nameAlternatives: []
                     }))
                   }
                 />
@@ -4007,9 +4362,11 @@ async function handleTransactionSubmit(event) {
         <p role="alert">{texts.collection[actionError]}</p>
       )}
 
-      {loading && <p role="status">{texts.collection.loading}</p>}
+      {view === 'collection' && loading && (
+        <p role="status">{texts.collection.loading}</p>
+      )}
 
-      {error && (
+      {view === 'collection' && error && (
         <p role="alert">
           {texts.collection.serviceError(error, texts.collection.loadError)}
         </p>
@@ -4019,7 +4376,7 @@ async function handleTransactionSubmit(event) {
         activeCollectionTab === 'cards' &&
         !loading &&
         !error &&
-        cards.length === 0 && (
+        !collectionHasCards && (
         <div className="empty-collection">
           <h3>{texts.collection.emptyTitle}</h3>
           <p>{texts.collection.emptyText}</p>
@@ -4031,7 +4388,7 @@ async function handleTransactionSubmit(event) {
         activeCollectionTab === 'trade' &&
         !loading &&
         !error &&
-        visibleCards.length === 0 && (
+        collectionTotal === 0 && (
         <p className="trade-filter-empty">
           {texts.collection.noTradeCards}
         </p>
@@ -4041,7 +4398,8 @@ async function handleTransactionSubmit(event) {
         (activeCollectionTab === 'cards' || activeCollectionTab === 'trade') &&
         !loading &&
         !error &&
-        cards.length > 0 && (
+        collectionHasCards &&
+        (activeCollectionTab === 'cards' || collectionTotal > 0) && (
         <>
           {activeCollectionTab === 'cards' && (
             <div className="collection-toolbar">
@@ -4051,7 +4409,10 @@ async function handleTransactionSubmit(event) {
                   type="search"
                   value={collectionSearch}
                   placeholder={texts.collectionFilters.searchPlaceholder}
-                  onChange={(event) => setCollectionSearch(event.target.value)}
+                  onChange={(event) => {
+                    setCollectionPage(1)
+                    setCollectionSearch(event.target.value)
+                  }}
                 />
               </label>
 
@@ -4059,7 +4420,10 @@ async function handleTransactionSubmit(event) {
                 <span>{texts.collectionFilters.sort}</span>
                 <select
                   value={collectionSort}
-                  onChange={(event) => setCollectionSort(event.target.value)}
+                  onChange={(event) => {
+                    setCollectionPage(1)
+                    setCollectionSort(event.target.value)
+                  }}
                 >
                   <option value="name-asc">{texts.collectionFilters.nameAsc}</option>
                   <option value="name-desc">{texts.collectionFilters.nameDesc}</option>
@@ -4074,7 +4438,10 @@ async function handleTransactionSubmit(event) {
                 <span>{texts.collectionFilters.tag}</span>
                 <select
                   value={collectionTagFilter}
-                  onChange={(event) => setCollectionTagFilter(event.target.value)}
+                  onChange={(event) => {
+                    setCollectionPage(1)
+                    setCollectionTagFilter(event.target.value)
+                  }}
                 >
                   <option value="all">{texts.collectionFilters.allTags}</option>
                   <option value="none">{texts.collectionFilters.withoutTags}</option>
@@ -4088,7 +4455,10 @@ async function handleTransactionSubmit(event) {
                 <span>{texts.collectionFilters.rarity}</span>
                 <select
                   value={collectionRarityFilter}
-                  onChange={(event) => setCollectionRarityFilter(event.target.value)}
+                  onChange={(event) => {
+                    setCollectionPage(1)
+                    setCollectionRarityFilter(event.target.value)
+                  }}
                 >
                   <option value="all">{texts.collectionFilters.allRarities}</option>
                   {collectionRarities.map((rarity) => (
@@ -4101,7 +4471,10 @@ async function handleTransactionSubmit(event) {
                 <span>{texts.collectionFilters.expansion}</span>
                 <select
                   value={collectionSetFilter}
-                  onChange={(event) => setCollectionSetFilter(event.target.value)}
+                  onChange={(event) => {
+                    setCollectionPage(1)
+                    setCollectionSetFilter(event.target.value)
+                  }}
                 >
                   <option value="all">{texts.collectionFilters.allExpansions}</option>
                   {collectionSetOptions.map((set) => (
@@ -4113,6 +4486,7 @@ async function handleTransactionSubmit(event) {
               <button
                 type="button"
                 onClick={() => {
+                  setCollectionPage(1)
                   setCollectionSearch('')
                   setCollectionSort('name-asc')
                   setCollectionTagFilter('all')
@@ -4125,7 +4499,7 @@ async function handleTransactionSubmit(event) {
             </div>
           )}
 
-          <p>{texts.collection.total(totalCards, cards.length)}</p>
+          <p>{texts.collection.total(totalCards, collectionTotal)}</p>
 
           {visibleCards.length === 0 ? (
             <p className="trade-filter-empty">
@@ -4148,12 +4522,6 @@ async function handleTransactionSubmit(event) {
                 key={item.id}
                 className={`collection-item${item.forTrade ? ' collection-item--for-trade' : ''}`}
               >
-                <PokemonCard
-                  card={details}
-                  texts={texts}
-                  language={language}
-                />
-
                 {(cardTagIds[String(item.id)] ?? []).length > 0 && (
                   <div className="card-tag-chips" aria-label={texts.tags.assigned}>
                     {(cardTagIds[String(item.id)] ?? []).map((tagId) => {
@@ -4162,6 +4530,12 @@ async function handleTransactionSubmit(event) {
                     })}
                   </div>
                 )}
+
+                <PokemonCard
+                  card={details}
+                  texts={texts}
+                  language={language}
+                />
 
                 {activeCollectionTab === 'cards' && (
                   <div className="card-tag-editor">
@@ -4253,12 +4627,44 @@ async function handleTransactionSubmit(event) {
               </article>
               )
             })}
-          </div>
-          )}
-        </>
-      )}
+           </div>
+           )}
 
-      {view === 'collection' &&
+          {collectionTotalPages > 1 && (
+            <nav
+              className="transaction-pagination"
+              aria-label={texts.collection.paginationLabel}
+            >
+              <button
+                type="button"
+                disabled={loading || collectionPage <= 1}
+                onClick={() => setCollectionPage((current) =>
+                  Math.max(1, current - 1)
+                )}
+              >
+                {texts.collection.previous}
+              </button>
+              <span>
+                {texts.collection.pageOf(
+                  collectionPage,
+                  collectionTotalPages
+                )}
+              </span>
+              <button
+                type="button"
+                disabled={loading || collectionPage >= collectionTotalPages}
+                onClick={() => setCollectionPage((current) =>
+                  Math.min(collectionTotalPages, current + 1)
+                )}
+              >
+                {texts.collection.next}
+              </button>
+            </nav>
+          )}
+         </>
+       )}
+
+       {view === 'collection' &&
         activeCollectionTab === 'missing' &&
         !loading &&
         !error && (
@@ -4563,7 +4969,7 @@ async function handleTransactionSubmit(event) {
         </section>
       )}
 
-      {view === 'history' && !loading && !error && (
+      {view === 'history' && !transactionsLoading && !transactionsError && (
         <section className="transaction-history transaction-history--page">
           <div className="transaction-history-content">
             <p>{texts.transactions.description}</p>
@@ -4597,7 +5003,7 @@ async function handleTransactionSubmit(event) {
                       setTransactionActiveSearch('')
                       setTransactionSearchResults([])
                       setTransactionSearchPage(1)
-                      setTransactionSearchLastPage(0)
+                      setTransactionSearchHasMore(false)
                       setTransactionSearchError(false)
                     }
                   }}
@@ -4669,7 +5075,7 @@ async function handleTransactionSubmit(event) {
 
             {transactionHasSearched &&
               !transactionSearchError &&
-              transactionSearchLastPage > 1 && (
+              (transactionSearchPage > 1 || transactionSearchHasMore) && (
               <nav
                 className="transaction-pagination"
                 aria-label={texts.transactions.searchPaginationLabel}
@@ -4683,20 +5089,15 @@ async function handleTransactionSubmit(event) {
                 >
                   {texts.transactions.previous}
                 </button>
-                <span>
-                  {texts.transactions.pageOf(
-                    transactionSearchPage,
-                    transactionSearchLastPage
-                  )}
-                </span>
+                <span>{texts.transactions.page(transactionSearchPage)}</span>
                 <button
                   type="button"
                   disabled={
                     transactionSearching ||
-                    transactionSearchPage >= transactionSearchLastPage
+                    !transactionSearchHasMore
                   }
                   onClick={() => setTransactionSearchPage((current) =>
-                    Math.min(transactionSearchLastPage, current + 1)
+                    current + 1
                   )}
                 >
                   {texts.transactions.next}

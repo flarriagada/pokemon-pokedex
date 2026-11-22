@@ -1,11 +1,62 @@
 import { DatabaseSync } from 'node:sqlite'
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function cacheCardMetadata(
+  db: DatabaseSync,
+  cardId: string,
+  language: 'es' | 'en',
+  details: unknown
+) {
+  if (!isRecord(details)) return
+
+  const set = isRecord(details.set) ? details.set : null
+  const name = typeof details.name === 'string' ? details.name.trim() : null
+  const rarity = typeof details.rarity === 'string'
+    ? details.rarity.trim()
+    : null
+  const setId = typeof set?.id === 'string' ? set.id.trim() : null
+  const setName = typeof set?.name === 'string' ? set.name.trim() : null
+
+  db.prepare(`
+    INSERT INTO card_metadata (
+      card_id,
+      language,
+      name,
+      rarity,
+      set_id,
+      set_name,
+      details_json,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+    ON CONFLICT(card_id, language) DO UPDATE SET
+      name = excluded.name,
+      rarity = excluded.rarity,
+      set_id = excluded.set_id,
+      set_name = excluded.set_name,
+      details_json = excluded.details_json,
+      updated_at = excluded.updated_at
+  `).run(
+    cardId,
+    language,
+    name || null,
+    rarity || null,
+    setId || null,
+    setName || null,
+    JSON.stringify(details)
+  )
+}
+
 export function openDatabase() {
   Deno.mkdirSync('./data', { recursive: true })
 
   const db = new DatabaseSync('./data/pokedex.db')
 
   db.exec('PRAGMA foreign_keys = ON;')
+  db.exec('PRAGMA journal_mode = WAL;')
+  db.exec('PRAGMA busy_timeout = 5000;')
 // tablas para usuarios, cartas de usuarios y sesiones
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -134,6 +185,42 @@ export function openDatabase() {
         REFERENCES tags(id)
         ON DELETE CASCADE
     );
+
+    -- Caché reconstruible para buscar y paginar sin consultar TCGdex masivamente.
+    CREATE TABLE IF NOT EXISTS card_metadata (
+      card_id TEXT NOT NULL,
+      language TEXT NOT NULL CHECK(language IN ('es', 'en')),
+      name TEXT,
+      rarity TEXT,
+      set_id TEXT,
+      set_name TEXT,
+      details_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+
+      PRIMARY KEY (card_id, language)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_user_cards_user_id_id
+      ON user_cards(user_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_transactions_user_date_id
+      ON card_transactions(user_id, transaction_date DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_transactions_user_type_date_id
+      ON card_transactions(
+        user_id,
+        transaction_type,
+        transaction_date DESC,
+        id DESC
+      );
+    CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
+      ON sessions(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_user_card_tags_tag_id
+      ON user_card_tags(tag_id, user_card_id);
+    CREATE INDEX IF NOT EXISTS idx_card_metadata_language_name
+      ON card_metadata(language, name COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_card_metadata_language_rarity
+      ON card_metadata(language, rarity COLLATE NOCASE);
+    CREATE INDEX IF NOT EXISTS idx_card_metadata_language_set
+      ON card_metadata(language, set_id);
 
   `)
 

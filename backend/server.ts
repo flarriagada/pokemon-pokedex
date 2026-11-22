@@ -7,7 +7,7 @@ import {
   getSetsFromTcgdex,
   getSetFromTcgdex
 } from './services/tcgdexService.ts'
-import { openDatabase } from './db/database.ts'
+import { cacheCardMetadata, openDatabase } from './db/database.ts'
 import { handleCollectionRequest } from './routes/collectionRoutes.ts'
 import { handleAuthRequest } from './routes/authRoutes.ts'
 import { cleanupExpiredSessions } from './db/cleanupSessions.ts'
@@ -304,6 +304,12 @@ if (authResponse) {
             { error: 'Carta no encontrada' },
             { status: 404 }
           )
+        }
+
+        try {
+          cacheCardMetadata(db, cardId, language, card)
+        } catch {
+          // La caché es prescindible: los datos externos siguen siendo válidos.
         }
 
         return Response.json(card)
