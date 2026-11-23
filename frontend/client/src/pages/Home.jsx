@@ -1,10 +1,14 @@
 import './Home.css'
 import { Link } from 'react-router'
+import fondoImage from '../../../../fondo.png'
 
 
 function Home({texts}) {
   return (
-    <section className="home">
+    <section
+      className="home"
+      style={{ '--home-background-image': `url("${fondoImage}")` }}
+    >
        <h2>{texts.home.welcome}</h2>
 
       <p>
